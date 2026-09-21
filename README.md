@@ -58,15 +58,15 @@ Claude Code, for every project:
 claude mcp add --scope user jevtown -- node /absolute/path/to/jevtown/mcp/server.js
 ```
 
-Claude Desktop, in `claude_desktop_config.json`:
+Claude Desktop: open Settings from the Claude menu, then Developer, then Edit Config, and add the server to `claude_desktop_config.json`:
 
 ```json
 { "mcpServers": { "jevtown": { "command": "/output/of/which/node", "args": ["/absolute/path/to/jevtown/mcp/server.js"] } } }
 ```
 
-The desktop app does not read your shell setup, so Node from nvm or Homebrew may be missing from its PATH; use the path `which node` prints (Node 22 or newer).
+Then quit the app completely and open it again, so that it reads the new config. The desktop app does not read your shell setup, so Node from nvm or Homebrew may be missing from its PATH; use the path `which node` prints (Node 22 or newer).
 
-The key comes from the server's environment or from `.env.local` next to `package.json`, the file `npm run check` reads, so nothing goes into a client's settings. The client starts `node` and not `npm run`, because npm prints a line to stdout, where only MCP messages may go.
+The key comes from the server's environment or from `.env.local` next to `package.json`, the file `npm run check` reads, so nothing goes into a client's settings. The two settings below can go into `.env.local` too, or into the environment the client gives the server: `env` in `claude_desktop_config.json`, `-e NAME=value` for `claude mcp add`. The client starts `node` and not `npm run`, because npm prints a line to stdout, where only MCP messages may go.
 
 The agent gets two tools:
 
@@ -75,8 +75,8 @@ The agent gets two tools:
 
 Both are paid from your key, so the server keeps to limits:
 
-- `JEVTOWN_MCP_DAILY_BUDGET_USD` (default 1) is how many dollars it may spend per UTC day, 0 for no limit. A call whose worst case would pass it is refused before anything is sent. The count lives in memory, so a restarted server starts the day from $0.
-- `JEVTOWN_MCP_MAX_SECONDS` (default 45): a check starts no wave it expects to end later than this, so that a call fits in the minute clients usually wait. 0 means no limit.
+- `JEVTOWN_MCP_DAILY_BUDGET_USD` (default 1) is how many dollars one server may spend per UTC day, 0 for no limit. A call whose worst case would pass it is refused before anything is sent. The count lives in the server's memory: a restarted server starts the day from $0, and every client starts a server of its own (Claude Code one per session), so two open sessions may spend twice the limit on one key.
+- `JEVTOWN_MCP_MAX_SECONDS` (default 45): a check starts the next wave only if it expects to finish within this many seconds with it, the follow-up question of a listing or a product included, so that a call fits in the minute clients usually wait. 0 means no limit.
 - It runs one call at a time, with at most 8 requests to Jev in flight, and keeps Jev's answers in memory for repeats: `check_text` on the variant a comparison picked gets its first wave from memory.
 
 Nothing is posted or stored, and only the requests to Jev leave your machine. The town is the 10,000, without the residents visitors moved in, and a post of the same text on the site uses its own seed, so its numbers will differ. The server speaks MCP 2026-07-28 and, through `initialize`, 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05, over stdio only: an HTTP endpoint would spend your key for whoever reaches it.
