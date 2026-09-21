@@ -1,0 +1,26 @@
+{
+  "name": "jev-crowd",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A social network where people write and 10,000 AI personas read. Every reaction comes from Jev.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Ivan Habor",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "wrangler d1 migrations apply jev-crowd --local && wrangler dev --port ${PORT:-5191} --var CROWD_DAILY_LIMIT:0 --var CROWD_DAILY_BUDGET_USD:0",
+    "deploy": "wrangler d1 migrations apply jev-crowd --remote && wrangler deploy",
+    "build-crowd": "node scripts/build-crowd.js",
+    "build-brand": "node scripts/build-brand.js",
+    "check": "node --env-file=.env.local scripts/check.js",
+    "probe": "node --env-file=.env.local scripts/probe.js",
+    "probe-resident": "node --env-file=.env.local scripts/resident-probe.js",
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "wrangler": "^4.135.0"
+  }
+}

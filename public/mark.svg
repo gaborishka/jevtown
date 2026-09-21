@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Jevtown"><rect width="512" height="512" rx="112" fill="#090B10"/><g transform="translate(39 39) scale(1.55)"><g fill="#EEF1F5">
+    <circle cx="28" cy="118" r="26"/>
+    <circle cx="28" cy="180" r="26"/>
+    <circle cx="28" cy="242" r="26"/>
+    <circle cx="120" cy="30" r="26"/>
+    <circle cx="120" cy="92" r="26"/>
+    <circle cx="120" cy="154" r="26"/>
+    <circle cx="120" cy="216" r="26"/>
+    <circle cx="208" cy="242" r="26"/>
+  </g>
+  <g fill="#ED6CA2">
+    <circle cx="208" cy="118" r="26"/>
+    <circle cx="208" cy="180" r="26"/>
+    <circle cx="246" cy="52" r="24"/>
+  </g></g></svg>

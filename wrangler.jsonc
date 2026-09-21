@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "jev-crowd",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-06-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    // Pages and the API go through the Worker; styles and scripts are served straight from the edge and do not count as Worker requests.
+    "run_worker_first": ["/", "/crowd", "/me", "/p/*", "/u/*", "/api/*", "/og/*"]
+  },
+  // database_id: `npx wrangler d1 create jev-crowd` prints it; a fork needs its own. Local development ignores it.
+  "d1_databases": [{ "binding": "DB", "database_name": "jev-crowd", "database_id": "49ba3cde-ac62-4a66-8658-a91e593530ee", "migrations_dir": "migrations" }],
+  "vars": {
+    // Checks one address may start per day, and what all visitors together may spend per day; 0 = no limit.
+    "CROWD_DAILY_LIMIT": "10",
+    "CROWD_DAILY_BUDGET_USD": "5",
+    // How far a text may travel: 1 = the first 600 people only, 4 = the whole crowd.
+    "CROWD_MAX_WAVES": "4",
+    // "typesafe" or "openrouter"; empty means whichever key is set, TypeSafe first.
+    "JEV_PROVIDER": ""
+  },
+  "routes": [{ "pattern": "jevtown.ivanhabor.com", "custom_domain": true }],
+  "observability": { "enabled": true }
+}

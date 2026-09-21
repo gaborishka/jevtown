@@ -1,0 +1,15 @@
+node_modules
+.env
+.env.*
+!.env.example
+data
+.DS_Store
+.claude
+*.log
+
+.wrangler
+.dev.vars
+output
+docs/PLAN.md
+brand/README.md
+brand/preview.html
