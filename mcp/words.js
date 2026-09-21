@@ -39,7 +39,7 @@ export const startOf = (text, chars = 40) => (text.length > chars ? `${text.slic
 const WORDS = {
   en: {
     cutByWaves: (wave) => `It got past the ${NTH.en[wave]} wave; this check was set to stop there.`,
-    cutByTime: (wave, seconds) => `It got past the ${NTH.en[wave]} wave; the next one would not have finished within ${seconds} s, so the check stopped there.`,
+    cutByTime: (wave, seconds) => `It got past the ${NTH.en[wave]} wave; with the next one the check would not have finished within ${seconds} s, so it stopped there.`,
     incomplete: (answered, asked, wave, n) => `Jev answered for only ${n(answered)} of ${n(asked)} people in the ${NTH.en[wave]} wave, so this check says nothing about the text. Try again later.`,
     blocked: (reasons) => `The site would not post this text: ${reasons}. The town did not read it.`,
     unlisted: (reasons) => `On the site it would stay out of the public feed: ${reasons}.`,
@@ -55,7 +55,7 @@ const WORDS = {
   },
   uk: {
     cutByWaves: (wave) => `Текст пройшов ${NTH.uk.passed[wave]} хвилю; ця перевірка мала на ній зупинитися.`,
-    cutByTime: (wave, seconds) => `Текст пройшов ${NTH.uk.passed[wave]} хвилю; наступна не встигла б за ${seconds} с, тож перевірка на цьому зупинилась.`,
+    cutByTime: (wave, seconds) => `Текст пройшов ${NTH.uk.passed[wave]} хвилю; з наступною перевірка не встигла б за ${seconds} с, тож на цьому зупинилась.`,
     incomplete: (answered, asked, wave, n) => `Jev відповів лише за ${n(answered)} із ${n(asked)} ${asked % 10 === 1 && asked % 100 !== 11 ? 'людини' : 'людей'} ${NTH.uk.of[wave]} хвилі, тож ця перевірка нічого не каже про текст. Спробуйте пізніше.`,
     blocked: (reasons) => `Сайт не опублікував би цей текст: ${reasons}. Місто його не читало.`,
     unlisted: (reasons) => `На сайті він не потрапив би до спільної стрічки: ${reasons}.`,
@@ -72,7 +72,7 @@ const WORDS = {
 };
 
 /** Moderation reason ids → the site's words for them. */
-export const reasonsIn = (lang, ids) => ids.map((id) => DICTIONARIES[lang].blocked.reasons[id] ?? id).join(', ');
+const reasonsIn = (lang, ids) => ids.map((id) => DICTIONARIES[lang].blocked.reasons[id] ?? id).join(', ');
 
 /** The headline of a check_text result, or null when the check says nothing about the text. */
 export function verdictOf(lang, report, { maxSeconds }) {

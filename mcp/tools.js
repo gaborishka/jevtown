@@ -26,6 +26,11 @@ const ENOUGH_ANSWERED = 0.7;
  * $0.022 per 1,000 people (docs/measurements.md), which is $0.0022 for a request of 100.
  */
 export const WORST_USD_PER_REQUEST = 0.0025;
+/**
+ * The pace a check expects before it has timed any of Jev's answers, as when its first wave came from
+ * memory: the low end of the 200 to 460 people a second measured (docs/measurements.md, point 4).
+ */
+const SLOWEST_PER_SECOND = 200;
 /** Answers kept for repeats; one is about 20 KB, so this is about 10 MB. */
 const CACHE_SIZE = 500;
 const MAX_PRICES = 6;
@@ -46,7 +51,7 @@ const round = (value, digits = 2) => Number(value.toFixed(digits)) || 0;
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /** The most requests a check can make: the opening one, every wave full, and a follow-up question for everybody reached. */
-export function worstRequests(presetId, maxWaves) {
+function worstRequests(presetId, maxWaves) {
   let reach = 0;
   let requests = 1;
   for (const wave of WAVES.slice(0, maxWaves)) {
@@ -81,7 +86,8 @@ function textFrom(value, message) {
 /** preset, prices, currency and lang, which both tools take. */
 function common(args) {
   const presetId = args.preset ?? 'post';
-  if (typeof presetId !== 'string' || !PRESETS[presetId]) throw mistake(`Unknown preset "${presetId}": use ${PRESET_IDS.slice(0, -1).join(', ')} or ${PRESET_IDS.at(-1)}.`);
+  // Own names only: toString or constructor are no presets.
+  if (typeof presetId !== 'string' || !Object.hasOwn(PRESETS, presetId)) throw mistake(`Unknown preset "${presetId}": use ${PRESET_IDS.slice(0, -1).join(', ')} or ${PRESET_IDS.at(-1)}.`);
   let prices;
   let currency;
   if (presetId === 'product') {
@@ -105,7 +111,7 @@ function common(args) {
 const CHECK_ARGS = ['text', 'preset', 'prices', 'currency', 'pool', 'waves', 'lang'];
 const COMPARE_ARGS = ['texts', 'preset', 'prices', 'currency', 'pool', 'lang'];
 
-export function checkArgs(raw) {
+function checkArgs(raw) {
   const args = known(raw, 'check_text', CHECK_ARGS);
   const text = textFrom(args.text, TEXT);
   const options = common(args);
@@ -114,7 +120,7 @@ export function checkArgs(raw) {
   return { ...options, text, pool: args.pool ?? poolFor(text), maxWaves };
 }
 
-export function compareArgs(raw) {
+function compareArgs(raw) {
   const args = known(raw, 'compare_texts', COMPARE_ARGS);
   const texts = args.texts;
   if (!Array.isArray(texts) || texts.length < 2 || texts.length > MAX_VARIANTS) throw mistake(`compare_texts takes 2 to ${MAX_VARIANTS} texts.`);
@@ -272,21 +278,24 @@ function marginOf(totals, size) {
 }
 
 const incomplete = (wave) => wave.size < ENOUGH_ANSWERED * wave.asked;
+/** A listing's or a product's follow-up question is asked only after waves Jev answered enough of: otherwise it is money spent on a check that says nothing. */
+const worthFollowingUp = (waves) => !waves.some(incomplete);
 
 /**
  * Indices of the rows that can be ranked, best first: first by the town's rule (did the first wave
  * send the variant on), then by the mood that wave has on average over draws.
  */
-export function ranking(rows, moods) {
+function ranking(rows, moods) {
   return rows.filter((row) => !row.error && !row.blocked.length)
     .sort((a, b) => Number(b.travels) - Number(a.travels) || moods[b.index].expected - moods[a.index].expected)
     .map((row) => row.index);
 }
 
 /**
- * createTools({ send, budgetUsd, maxSeconds, envFile, now }) → [check_text, compare_texts]. send(request)
- * is `ask` bound to a provider. budgetUsd is dollars per UTC day, 0 for no limit; maxSeconds is the
- * time a check may plan for, 0 for no limit; envFile is where the server looks for a key; now() is the clock.
+ * createTools({ send, budgetUsd, maxSeconds, envFile, now }) → [check_text, compare_texts].
+ * send(request, retries) is `ask` bound to a provider; retries is its shared allowance, emptied when a
+ * call stops. budgetUsd is dollars per UTC day, 0 for no limit; maxSeconds is the time a check may plan
+ * for, 0 for no limit; envFile is where the server looks for a key; now() is the clock.
  */
 export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now = Date.now }) {
   const towns = {};
@@ -339,9 +348,13 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
   /** A running call: its own stop switch, tied to the client's cancel, and what its requests cost. */
   function begin(signal, onSettle) {
     const stop = new AbortController();
+    // Every request of the call draws its retries from one allowance, emptied when the call stops: Jev's
+    // retries would otherwise go on for minutes after a cancel, paid, and keep the server busy.
+    const retries = { left: Infinity };
+    stop.signal.addEventListener('abort', () => (retries.left = 0), { once: true });
     if (signal?.aborted) stop.abort();
     else signal?.addEventListener('abort', () => stop.abort(), { once: true });
-    const job = { signal: stop.signal, stop: () => stop.abort(), open: 0, finished: false, message: undefined, tally: { requests: 0, cached: 0, failed: 0, tokens: 0, usd: 0, settled: 0 } };
+    const job = { signal: stop.signal, stop: () => stop.abort(), retries, open: 0, finished: false, message: undefined, tally: { requests: 0, cached: 0, failed: 0, tokens: 0, usd: 0, settled: 0 } };
     job.send = sender(job, onSettle);
     job.end = () => {
       job.finished = true;
@@ -387,7 +400,7 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
         letGo();
         return await fromMemory(key, job);
       }
-      const pending = send(request);
+      const pending = send(request, job.retries);
       remember(key, pending);
       let answer;
       try {
@@ -433,7 +446,7 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
   const checkText = {
     name: 'check_text',
     title: 'Check a text with Jevtown',
-    description: "Shows a text to Jevtown, a town of 10,000 computed personas who speak its language (Ukrainian or English), and reports what they did: how far it travelled in waves of 600, 1,500 and 3,000 people (and everybody else with waves: 4), who stopped, who was glad and who got annoyed, and for a listing or a product what buyers would ask or pay. Every reaction comes from Jev, a model that answers typed questions with probabilities and writes no text, so rewriting is up to you. It is paid from the Jev key of whoever runs this server: a text that dies in the first wave costs under a cent, one that reaches 5,100 people about five cents, and a listing or product that reaches everybody up to about thirty cents. A check takes from a few seconds to under a minute; a wave that would not finish within the server's time limit is not started. Reactions are drawn with a fixed seed, so the same text gives nearly the same result; that is not a measure of certainty. A post of the same text on the site will differ: it has its own seed and the residents visitors moved in.",
+    description: "Shows a text to Jevtown, a town of 10,000 computed personas who speak its language (Ukrainian or English), and reports what they did: how far it travelled in waves of 600, 1,500 and 3,000 people (and everybody else with waves: 4), who stopped, who was glad and who got annoyed, and for a listing or a product what buyers would ask or pay. Every reaction comes from Jev, a model that answers typed questions with probabilities and writes no text, so rewriting is up to you. It is paid from the Jev key of whoever runs this server: a text that dies in the first wave costs under a cent, one that reaches 5,100 people about five cents, and a listing or product that reaches everybody up to about thirty cents. A check takes from a few seconds to under a minute; a wave is not started if the check would then not finish within the server's time limit. Reactions are drawn with a fixed seed, so the same text gives nearly the same result; that is not a measure of certainty. A post of the same text on the site will differ: it has its own seed and the residents visitors moved in.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -452,32 +465,47 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
       const { text, presetId, pool, prices, currency, maxWaves, lang } = checkArgs(raw);
       const total = worstRequests(presetId, maxWaves);
       guard(total);
-      const job = begin(signal, (settled) => progress?.(settled, total, job.message));
       const keys = Object.keys(PRESETS[presetId].reactions);
+      const followsUp = Boolean(PRESETS[presetId].followUp);
       const startedAt = now();
       const elapsed = () => (now() - startedAt) / 1000;
       let firstWave = null;
-      let asked = 0;
-      let answered = 0;
+      let reached = null; // the counters of everybody the waves reached so far
       let outOfTime = false;
+      // The waves' pace: the people Jev answered for and the seconds that took. People answered from memory
+      // took no time, so they are left out, or a check after a comparison would expect Jev to be faster than it is.
+      const pace = { people: 0, seconds: 0 };
+      let waveFrom = null; // when the running wave began, and how many answers had come from memory by then
+      // Nothing that can throw comes between begin() and the try: a throw there would skip job.end() and leave the server busy for good.
+      const job = begin(signal, (settled) => progress?.(settled, total, job.message));
+      const mark = () => ({ at: now(), cached: job.tally.cached });
       try {
         const result = await runCheck({
-          send: job.send, presetId, pool, text, versionId: SEED, prices, currency, maxWaves, opening: true,
+          // The first wave begins once the opening request has its answer.
+          send: (request) => job.send(request).finally(() => (waveFrom ??= mark())),
+          presetId, pool, text, versionId: SEED, prices, currency, maxWaves, opening: true,
           onWave: (wave, reactions) => {
-            if (wave.index === 0) firstWave = counters(presetId, keys, reactions);
-            asked += wave.asked;
-            answered += wave.size;
+            reached = counters(presetId, keys, reactions);
+            if (wave.index === 0) firstWave = reached;
+            const fromMemory = Math.min(wave.asked, (job.tally.cached - waveFrom.cached) * PER_REQUEST);
+            pace.people += wave.asked - fromMemory;
+            pace.seconds += (now() - waveFrom.at) / 1000;
+            waveFrom = mark();
             job.message = waveLine(wave);
           },
-          // The next wave starts only if Jev answered enough of this one, and if it is expected to end within the limit at the pace so far.
+          // The next wave starts only if Jev answered enough of this one, and if the check is expected to end
+          // within the limit with it: the wave at the pace so far, then for a listing or a product the follow-up
+          // question, asked of the same share of everybody reached as has stopped so far.
           mayGoOn: (wave) => {
             if (incomplete(wave)) return false;
             if (wave.index + 1 >= maxWaves || !maxSeconds) return true;
-            const next = Math.min(WAVES[wave.index + 1].size, CROWD - answered);
-            const seconds = elapsed();
-            outOfTime = seconds + (next * seconds) / asked > maxSeconds;
+            const next = Math.min(WAVES[wave.index + 1].size, CROWD - reached.reach);
+            const followUp = followsUp ? (reached.stopped / Math.max(1, reached.reach)) * (reached.reach + next) : 0;
+            const perSecond = pace.people ? pace.people / pace.seconds : SLOWEST_PER_SECOND;
+            outOfTime = elapsed() + (next + followUp) / perSecond > maxSeconds;
             return !outOfTime;
           },
+          mayFollowUp: worthFollowingUp,
         });
         const incompleteAt = result.waves.findIndex(incomplete);
         const last = result.waves.at(-1);
@@ -522,10 +550,11 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
       const { texts, presetId, pool, prices, currency, lang } = compareArgs(raw);
       const total = texts.length * worstRequests(presetId, 1);
       guard(total);
-      const job = begin(signal, (settled) => progress?.(settled, total, job.message));
       const keys = Object.keys(PRESETS[presetId].reactions);
       const startedAt = now();
       const firstWaves = [];
+      // Nothing that can throw comes between begin() and the try: a throw there would skip job.end() and leave the server busy for good.
+      const job = begin(signal, (settled) => progress?.(settled, total, job.message));
       try {
         // The variants run side by side and share the slots, so five take little longer than one.
         const settled = await Promise.allSettled(texts.map((text, index) => runCheck({
@@ -534,6 +563,7 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
             firstWaves[index] = counters(presetId, keys, reactions);
             job.message = `variant ${index + 1}, ${waveLine(wave)}`;
           },
+          mayFollowUp: worthFollowingUp,
         })));
         const errors = settled.filter((outcome) => outcome.status === 'rejected').map((outcome) => outcome.reason);
         // A fatal answer ends the whole call, and so does a bug of this server, which must not pass for Jev's failure in a row.

@@ -43,7 +43,7 @@ const { version } = JSON.parse(readFileSync(new URL('../package.json', import.me
 const server = createServer({
   info: { name: 'jevtown', title: 'Jevtown', version },
   instructions: INSTRUCTIONS,
-  tools: createTools({ send: (request) => ask(provider, request), budgetUsd, maxSeconds, envFile, now: Date.now }),
+  tools: createTools({ send: (request, retries) => ask(provider, request, retries), budgetUsd, maxSeconds, envFile, now: Date.now }),
   write: (message) => out(`${JSON.stringify(message)}\n`),
   log,
 });
