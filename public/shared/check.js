@@ -6,7 +6,7 @@ import { crowd } from './personas.js';
 import { PRESETS, priceLadder, lookOf, listOf, answersFor, LISTS, NOT_SHOWN, CANT_TELL } from './presets.js';
 import { reactionRequest, followUpRequest, askRequest, openingRequest, openingAnswers, questionId } from './requests.js';
 import { firstWave, nextWave, mood, travels, gatherAsked, asking, emptyGathered, WAVES } from './feed.js';
-import { drawReaction, drawAnswer } from './draw.js';
+import { drawReaction, drawAnswer, expectedTone } from './draw.js';
 import { eachLimit } from './jev.js';
 import { rng, hash32 } from './rng.js';
 
@@ -66,13 +66,17 @@ export function mergeSaid(parts, missing = {}) {
 }
 
 /**
- * runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves, onWave }) → the finished check,
+ * runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves, onWave, blocking, mayGoOn }) → the finished check,
  * with `said` (what the people asked at the end answered, as mergeSaid gives it) and `checks`, `unlisted`
- * and `blocked` from the opening request, reported and not acted upon.
+ * and `blocked` from the opening request, acted upon only with `blocking`.
  * send(request) → { answers, tokens, usd } is `ask` bound to a provider. onWave(wave, reactions) is called
  * after every wave, for whoever draws the grid.
+ * blocking: act on the opening request's moderation questions as the Worker does, so a text the site
+ * would not post is read by nobody.
+ * mayGoOn(wave): called after a wave that travels; false stops the check there, for a caller with a
+ * clock or a budget of its own.
  */
-export async function runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves = WAVES.length, onWave }) {
+export async function runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves = WAVES.length, onWave, blocking = false, mayGoOn }) {
   const preset = PRESETS[presetId];
   if (!preset) throw new Error(`unknown preset: ${presetId}`);
   const people = crowd(pool);
@@ -98,6 +102,11 @@ export async function runCheck({ send, presetId, pool, text, versionId, prices, 
 
   const opening = openingAnswers((await paid(openingRequest(presetId, text))).answers);
   const { scores } = opening;
+  // As on the site: a text it would not post is read by nobody, and the one request is all it costs.
+  if (blocking && opening.blocked.length) {
+    const { checks, unlisted, blocked } = opening;
+    return { presetId, pool, keys, scores, reactions: new Uint8Array(people.length), waves: [], reach: 0, followUp: null, said: mergeSaid([]), checks, unlisted, blocked, ...spent, seconds: (performance.now() - startedAt) / 1000 };
+  }
 
   const reactions = new Uint8Array(people.length);
   const reached = new Map();
@@ -109,17 +118,20 @@ export async function runCheck({ send, presetId, pool, text, versionId, prices, 
   for (let index = 0; index < maxWaves && wave.length; index++) {
     const waveStartedAt = performance.now();
     const drawn = [];
+    let expected = 0;
     await askAbout(wave, (batch) => reactionRequest(presetId, text, batch), (persona, probabilities) => {
       const reaction = drawReaction(probabilities, pool, persona.id, versionId);
       reactions[persona.id] = 1 + keys.indexOf(reaction);
       reached.set(persona.id, reaction);
       drawn.push(reaction);
+      expected += expectedTone(presetId, probabilities);
     });
-    const finished = { index, size: drawn.length, mood: mood(presetId, drawn), travels: travels(presetId, drawn), seconds: (performance.now() - waveStartedAt) / 1000 };
+    // `asked` against `size` shows how many answers failed batches took away; `expectedMood` is the mood over all possible draws.
+    const finished = { index, asked: wave.length, size: drawn.length, mood: mood(presetId, drawn), expectedMood: expected / Math.max(1, drawn.length), travels: travels(presetId, drawn), seconds: (performance.now() - waveStartedAt) / 1000 };
     waves.push(finished);
     gathered = gatherAsked(presetId, wave.map((persona) => persona.id), reactionOf, gathered);
     onWave?.(finished, reactions);
-    if (!finished.travels) break;
+    if (!finished.travels || mayGoOn?.(finished) === false) break;
     wave = nextWave(people, reached, scores, presetId, index + 1, random);
   }
 

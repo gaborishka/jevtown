@@ -2,7 +2,7 @@
 // version of the text: a reload shows the same crowd, and two personas with the same odds can
 // still act differently.
 import { unit } from './rng.js';
-import { CANT_TELL } from './presets.js';
+import { CANT_TELL, PRESETS } from './presets.js';
 
 /** Below this probability of the best answer Jev is guessing, and the persona gets a hollow dot. */
 export const CONFIDENT_FROM = 0.35;
@@ -19,6 +19,24 @@ export function drawReaction(probabilities, pool, personaId, versionId) {
     if (left < 0) return reaction;
   }
   return entries.at(-1)[0];
+}
+
+/**
+ * The tone a persona gives its wave on average over all possible draws: glad +1, sorry -1, anything
+ * else 0, weighted by Jev's probabilities. It is 0 where drawReaction gives can't tell. Two texts can
+ * then be compared without the luck of one draw, at no extra request.
+ */
+export function expectedTone(presetId, probabilities) {
+  const entries = Object.entries(probabilities);
+  if (!entries.length || Math.max(...entries.map(([, value]) => value)) < CONFIDENT_FROM) return 0;
+  const reactions = PRESETS[presetId].reactions;
+  let total = 0;
+  let net = 0;
+  for (const [reaction, value] of entries) {
+    total += value;
+    net += (reactions[reaction]?.tone ?? 0) * value;
+  }
+  return total ? net / total : 0;
 }
 
 /**
