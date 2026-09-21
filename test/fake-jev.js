@@ -13,20 +13,22 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * createFakeJev({ delay, fail, usd, tokens, onSend }) → { send, calls, inFlight, mostInFlight, requests }.
- * fail(request, call) → true makes that call fail the way a busy Jev does; onSend(request) runs as a
- * request is sent, for a test that moves a clock.
+ * delay is milliseconds, or delay(request, call) for a test that needs some calls slower than others.
+ * fail(request, call) → true makes that call fail the way a busy Jev does; onSend(request, retries)
+ * runs as a request is sent, for a test that moves a clock or looks at the retries allowance.
  */
 export function createFakeJev({ delay = 0, fail = () => false, usd = 0.001, tokens = 100, onSend } = {}) {
   const fake = { calls: 0, inFlight: 0, mostInFlight: 0, requests: [] };
-  fake.send = async (request) => {
+  fake.send = async (request, retries) => {
     fake.calls += 1;
     const call = fake.calls;
     fake.requests.push(request);
     fake.inFlight += 1;
     fake.mostInFlight = Math.max(fake.mostInFlight, fake.inFlight);
     try {
-      onSend?.(request);
-      if (delay) await sleep(delay);
+      onSend?.(request, retries);
+      const wait = typeof delay === 'function' ? delay(request, call) : delay;
+      if (wait) await sleep(wait);
       if (fail(request, call)) throw new Error('Jev 503: busy');
       return { answers: answer(request), tokens, usd };
     } finally {

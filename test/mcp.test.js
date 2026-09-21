@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { cpSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createServer, LEGACY } from '../mcp/protocol.js';
 import { createTools, INSTRUCTIONS, WORST_USD_PER_REQUEST } from '../mcp/tools.js';
 import { runCheck, AT_ONCE } from '../public/shared/check.js';
@@ -94,6 +96,7 @@ test('legacy clients get the tools, with the fields their revision knows', async
   }
   const old = connect();
   assert.equal((await old.request('initialize', { protocolVersion: '1999-01-01', capabilities: {} })).result.protocolVersion, '2025-11-25');
+  for (const method of ['toString', 'isPrototypeOf', '__proto__']) assert.equal((await old.request(method)).error.code, -32601, method);
   const answer = await old.legacyCall('check_text', { text: 'meh', waves: 1 });
   assert.equal(answer.result.isError, false);
   assert.ok(answer.result.structuredContent && !('resultType' in answer.result));
@@ -130,15 +133,24 @@ test('modern clients need no handshake, and bad requests get the right errors', 
   assert.equal(await code('tools/call', { name: 'rewrite_text', arguments: {}, _meta: META }), -32602);
   assert.equal(await code('resources/list', { _meta: META }), -32601);
   assert.equal(await code('ping', { _meta: META }), -32601); // 2026-07-28 has no ping
+  for (const method of ['toString', 'constructor', '__proto__', 'valueOf', 'hasOwnProperty']) assert.equal(await code(method, { _meta: META }), -32601, method);
   assert.deepEqual((await client.send('[{"jsonrpc":"2.0","id":90,"method":"ping"}]', undefined)).error.code, -32600);
   const broken = await client.send('{"jsonrpc":"2.0", "id": 91', undefined);
   assert.deepEqual([broken.error.code, 'id' in broken], [-32700, false]);
   assert.equal((await client.send({ jsonrpc: '2.0', id: null, method: 'tools/list' }, undefined)).error.code, -32600);
+  // A message with neither a method nor a result is no request and no response, and it gets an answer rather than silence.
+  const noMethod = await client.send('{"jsonrpc":"2.0","id":14}', 14);
+  assert.deepEqual([noMethod.id, noMethod.error.code], [14, -32600]);
+  for (const line of ['{"jsonrpc":"2.0"}', '{"jsonrpc":"2.0","method":1}']) {
+    const answer = await client.send(line, undefined);
+    assert.deepEqual([answer.error.code, 'id' in answer], [-32600, false], line);
+  }
 
   const before = client.messages.length;
   client.notify('notifications/initialized');
   client.notify('notifications/cancelled', { requestId: 12345 });
   client.notify('notifications/whatever');
+  client.server.receive('{"jsonrpc":"2.0","id":15,"result":{}}'); // a response: this server asked nothing
   await tick();
   assert.equal(client.messages.length, before);
 });
@@ -217,6 +229,9 @@ test('bad arguments are refused before anything is sent', async () => {
   assert.match(await refusal('check_text', { text: '   ' }), /The text must be 1 to 2000 characters/);
   assert.match(await refusal('check_text', {}), /The text must be 1 to 2000 characters/);
   assert.match(await refusal('check_text', { text: 'x'.repeat(2001) }), /The text must be 1 to 2000 characters/);
+  // Names every object inherits are no presets; the server refuses them and stays free for the next call.
+  assert.match(await refusal('check_text', { text: 'coffee', preset: 'toString', waves: 1 }), /Unknown preset "toString"/);
+  assert.match(await refusal('compare_texts', { texts: ['coffee', 'tea'], preset: 'constructor' }), /Unknown preset "constructor"/);
   assert.match(await refusal('check_text', { text: 'coffee', preset: 'tweet' }), /Unknown preset "tweet": use post, listing, product or headline/);
   assert.match(await refusal('check_text', { text: 'coffee', waves: 5 }), /waves must be a whole number from 1 to 4/);
   assert.match(await refusal('check_text', { text: 'coffee', waves: 2.5 }), /waves must be a whole number/);
@@ -278,6 +293,13 @@ test('failed batches do not count as a weak text', async () => {
   assert.match(textOf(answer), /^Jev answered for only 100 of 600 people in the first wave, so this check says nothing about the text\./);
   assert.match(textOf(answer), /Requests that failed: 5; their people count as not shown\./);
 
+  // An incomplete listing does not pay for the buyers' question: the check says nothing about the text anyway.
+  let listingFailures = 0;
+  const failingListing = createFakeJev({ fail: (request) => kindOf(request) === 'wave' && listingFailures++ < 5 });
+  const listing = structured(await connect({ fake: failingListing }).call('check_text', { text: 'coffee grinder', preset: 'listing', waves: 1 }));
+  assert.deepEqual([listing.status, listing.questions], ['incomplete', null]);
+  assert.ok(!failingListing.requests.some((request) => kindOf(request) === 'follow-up'));
+
   let coffeeFailures = 0;
   const partly = createFakeJev({ fail: (request) => kindOf(request) === 'wave' && request.state.post === 'coffee' && coffeeFailures++ < 5 });
   const compared = structured(await connect({ fake: partly }).call('compare_texts', { texts: ['coffee', 'meh'] }));
@@ -327,19 +349,34 @@ test('one call at a time, and at most AT_ONCE requests in flight', async () => {
 test('a cancelled call stops asking Jev, gets no answer, and holds the server until its requests are back', async () => {
   let client;
   let id;
-  const fake = createFakeJev({ delay: 20, onSend: () => fake.calls === 1 && setImmediate(() => client.notify('notifications/cancelled', { requestId: id, reason: 'test' })) });
+  let allowance;
+  // The opening and the first wave (calls 1 to 7) answer at once. The second wave sends 8 at a time: call 8
+  // answers soon, 9 to 15 slowly, and the cancel comes once all 8 are out. runCheck gives up when call 8 is
+  // back, while 9 to 15 are still on their way.
+  const fake = createFakeJev({
+    delay: (request, call) => (call <= 7 ? 0 : call === 8 ? 5 : 100),
+    onSend: (request, retries) => {
+      allowance ??= retries;
+      if (fake.calls === 15) setImmediate(() => client.notify('notifications/cancelled', { requestId: id, reason: 'test' }));
+    },
+  });
   client = connect({ fake });
   id = client.newId();
   const cancelled = client.call('check_text', { text: 'coffee' }, { id });
+  await until(() => fake.calls === 15 && fake.inFlight === 7);
   await tick();
   const refused = await client.call('check_text', { text: 'meh', waves: 1 });
   assert.match(textOf(refused), /^Another check is running/);
+  assert.ok(fake.inFlight > 0);
+  assert.equal(allowance.left, 0, 'the requests on their way retry nothing');
   await until(() => fake.inFlight === 0);
   await tick();
+  assert.equal(fake.calls, 15);
   assert.ok(!client.messages.some((message) => message.id === id));
-  assert.ok(fake.calls < 10, `sent ${fake.calls}`);
   const after = await client.call('check_text', { text: 'meh', waves: 1 });
   assert.equal(after.result.isError, false);
+  // What Jev answered for the cancelled call is paid, so the day's spending counts it: every call at $0.001.
+  assert.equal(structured(after).budget.spentUsd, Number((fake.calls * 0.001).toFixed(4)));
   assert.equal(await Promise.race([cancelled.then(() => 'answered'), tick().then(() => 'silent')]), 'silent');
 });
 
@@ -363,7 +400,22 @@ test('the time limit stops before the wave that would not fit', async () => {
   const answer = await connect({ fake, now: () => now, maxSeconds: 45 }).call('check_text', { text: 'coffee', waves: 4 });
   const report = structured(answer);
   assert.deepEqual([report.waves.length, report.status, report.stoppedAt], [3, 'cut_by_time', null]);
-  assert.equal(report.verdict, 'It got past the third wave; the next one would not have finished within 45 s, so the check stopped there.');
+  assert.equal(report.verdict, 'It got past the third wave; with the next one the check would not have finished within 45 s, so it stopped there.');
+
+  // A listing's buyers get their question after the last wave, and the limit leaves room for it.
+  let clock = NOON;
+  const listing = createFakeJev({ onSend: () => (clock += 400) });
+  const asked = structured(await connect({ fake: listing, now: () => clock, maxSeconds: 45 }).call('check_text', { text: 'coffee grinder', preset: 'listing', waves: 4 }));
+  assert.deepEqual([asked.waves.length, asked.status], [3, 'cut_by_time']);
+  assert.ok(asked.questions.length && asked.cost.seconds <= 45, `${asked.cost.seconds} s`);
+
+  // After a comparison the first wave comes from memory, at no time, and the pace is still Jev's own.
+  let later = NOON;
+  const warm = connect({ fake: createFakeJev({ onSend: () => (later += 500) }), now: () => later, maxSeconds: 45 });
+  await warm.call('compare_texts', { texts: ['coffee', 'meh'] });
+  const followed = structured(await warm.call('check_text', { text: 'coffee', waves: 4 }));
+  assert.deepEqual([followed.waves.length, followed.status, followed.cost.cached], [3, 'cut_by_time', 7]);
+  assert.ok(followed.cost.seconds <= 45, `${followed.cost.seconds} s`);
   const unlimited = structured(await connect({ fake: createFakeJev(), maxSeconds: 0 }).call('check_text', { text: 'coffee', waves: 4 }));
   assert.deepEqual([unlimited.waves.length, unlimited.status, unlimited.reach], [4, 'everyone', 10000]);
   const short = structured(await connect().call('check_text', { text: 'coffee', waves: 2 }));
@@ -384,6 +436,14 @@ test('a repeated request is answered from memory', async () => {
   const report = structured(await twice.call('compare_texts', { texts: ['coffee', 'coffee'] }));
   assert.equal(twice.fake.calls, 7);
   assert.deepEqual([report.cost.requests, report.cost.cached], [14, 7]);
+
+  // A failure is not kept: the batch that failed goes to Jev again, and only that one.
+  let failed = false;
+  const flaky = connect({ fake: createFakeJev({ fail: (request) => kindOf(request) === 'wave' && !failed && (failed = true) }) });
+  assert.equal(structured(await flaky.call('check_text', { text: 'tomatoes', waves: 1 })).cost.failedBatches, 1);
+  const before = flaky.fake.calls;
+  const retried = structured(await flaky.call('check_text', { text: 'tomatoes', waves: 1 }));
+  assert.deepEqual([flaky.fake.calls - before, retried.cost.failedBatches, retried.cost.cached], [1, 0, 6]);
 });
 
 test('no key is a tool error that says where the key goes', async () => {
@@ -411,13 +471,22 @@ test('the engine reports what the MCP server needs, and old callers see no chang
   const seen = [];
   const stoppedEarly = await runCheck({ send: fake.send, presetId: 'post', pool: 'en', text: 'glad 0.4', versionId: 'v1', mayGoOn: (wave) => (seen.push(wave.index), false) });
   assert.deepEqual([stoppedEarly.waves.length, seen], [1, [0]]);
+
+  const listing = createFakeJev();
+  const noQuestion = await runCheck({ send: listing.send, presetId: 'listing', pool: 'en', text: 'coffee grinder', versionId: 'v1', maxWaves: 1, mayFollowUp: (waves) => (seen.push(waves.length), false) });
+  assert.deepEqual([noQuestion.followUp, seen.at(-1)], [null, 1]);
+  assert.ok(!listing.requests.some((request) => kindOf(request) === 'follow-up'));
 });
 
-test('over stdio, stdout carries MCP messages and nothing else', async () => {
-  const env = { ...process.env };
-  delete env.TYPESAFE_API_KEY;
-  delete env.OPENROUTER_API_KEY;
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../mcp/server.js', import.meta.url))], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+test('over stdio, stdout carries MCP messages and nothing else', async (t) => {
+  // The server reads .env.local next to package.json. It runs from a copy that has none, so no key of this
+  // checkout is loaded and no setting in the file changes what the server prints; the settings and keys of
+  // the environment are left out too.
+  const copy = mkdtempSync(join(tmpdir(), 'jevtown-mcp-'));
+  t.after(() => rmSync(copy, { recursive: true, force: true }));
+  for (const path of ['mcp', 'public', 'package.json']) cpSync(new URL(`../${path}`, import.meta.url), join(copy, path), { recursive: true });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(TYPESAFE_API_KEY|OPENROUTER_API_KEY|JEV_PROVIDER|JEVTOWN_MCP_.*)$/.test(name)));
+  const child = spawn(process.execPath, [join(copy, 'mcp', 'server.js')], { cwd: copy, env, stdio: ['pipe', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', (chunk) => (stdout += chunk));
@@ -434,5 +503,5 @@ test('over stdio, stdout carries MCP messages and nothing else', async () => {
   const [opened, listed] = lines.map((line) => JSON.parse(line));
   assert.deepEqual([opened.jsonrpc, opened.id, opened.result.protocolVersion], ['2.0', 1, '2025-11-25']);
   assert.deepEqual(listed.result.tools.map((tool) => tool.name), ['check_text', 'compare_texts']);
-  assert.match(stderr, /^Jevtown MCP server · /);
+  assert.equal(stderr, 'Jevtown MCP server · no Jev key · $1.00 a day · 45 s\n');
 });
