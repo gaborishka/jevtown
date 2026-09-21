@@ -2,6 +2,8 @@
 
 Live at [jevtown.ivanhabor.com](https://jevtown.ivanhabor.com), no sign-in. [Watch the 30-second video](https://www.youtube.com/watch?v=Ktm2qwW7JAo).
 
+<a href="https://www.producthunt.com/posts/jevtown?utm_source=badge-featured&utm_medium=badge"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1256567&theme=dark"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1256567&theme=light" alt="Jevtown on Product Hunt" width="250" height="54"></picture></a>
+
 [![The Jevtown home page: one iPhone listing written two ways, and the town that read it](docs/images/home.png)](https://jevtown.ivanhabor.com)
 
 A social network where people write and 10,000 AI personas read. Post a text, a listing, a product or a headline, and the crowd reacts within seconds: most scroll past, some like, repost, block, write to the seller or buy. Every reaction comes from [Jev](https://typesafe.ai), a model that answers typed questions with probabilities and writes no text.
