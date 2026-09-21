@@ -37,7 +37,9 @@ export function createServer({ info, instructions, tools, write, log = () => {} 
   let legacy = null; // the revision an `initialize` chose for this process
   const inFlight = new Map(); // JSON of a tools/call id → its AbortController
 
-  const failure = (id, error) => ({ jsonrpc: '2.0', ...(isId(id) ? { id } : {}), error: { code: error.code, message: error.message, ...(error.data !== undefined ? { data: error.data } : {}) } });
+  // Error codes must be integers: whatever else was thrown is a bug of this server, an Internal error.
+  const failure = (id, error) => ({ jsonrpc: '2.0', ...(isId(id) ? { id } : {}), error: { code: Number.isInteger(error.code) ? error.code : -32603, message: error.message, ...(error.data !== undefined ? { data: error.data } : {}) } });
+  const invalid = (id) => failure(id, rpcError(-32600, 'Invalid Request'));
   const infoFor = (version) => (since(version, '2025-06-18') ? info : { name: info.name, version: info.version });
 
   /** The revision a request is served under, or the error it gets. */
@@ -86,23 +88,27 @@ export function createServer({ info, instructions, tools, write, log = () => {} 
 
   /** The answer to one message: a response, a promise of one, or null for a notification or a cancelled call. */
   function respond(message) {
-    if (!isObject(message) || message.jsonrpc !== '2.0') return failure(message?.id, rpcError(-32600, 'Invalid Request'));
+    if (!isObject(message) || message.jsonrpc !== '2.0') return invalid(message?.id);
+    // A response: this server sends no requests, so there is nothing it answers.
+    if (!('method' in message) && 'id' in message && ('result' in message || 'error' in message)) return null;
+    // Anything else without a method name is an Invalid Request to JSON-RPC 2.0; silence would leave a client that sent it waiting until its timeout.
+    if (typeof message.method !== 'string') return invalid(message.id);
     if (!('id' in message)) {
       if (message.method === 'notifications/cancelled') inFlight.get(JSON.stringify(message.params?.requestId))?.abort();
       return null; // every other notification needs nothing from this server
     }
-    if (!('method' in message)) return null; // a response: this server sends no requests, so there is nothing it answers
     const { id, method, params } = message;
-    if (!isId(id) || typeof method !== 'string') return failure(id, rpcError(-32600, 'Invalid Request'));
+    if (!isId(id)) return invalid(id);
     try {
       if (params !== undefined && !isObject(params)) throw rpcError(-32602, 'params must be an object');
       if (method === 'initialize') return result(id, METHODS.initialize(params), { modern: false });
       const era = eraOf(params);
-      const handler = METHODS[method];
-      if (!handler) throw rpcError(-32601, `Method not found: ${method}`);
-      const answer = handler(params, era, id);
+      // Own names only: toString or constructor are no methods of this server.
+      if (!Object.hasOwn(METHODS, method)) throw rpcError(-32601, `Method not found: ${method}`);
+      const answer = METHODS[method](params, era, id);
       return answer instanceof Promise ? answer : result(id, answer, era);
     } catch (error) {
+      if (!Number.isInteger(error.code)) log(`${method}: ${error.stack ?? error}`);
       return failure(id, error);
     }
   }
