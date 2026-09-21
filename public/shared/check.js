@@ -66,7 +66,7 @@ export function mergeSaid(parts, missing = {}) {
 }
 
 /**
- * runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves, onWave, blocking, mayGoOn }) → the finished check,
+ * runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves, onWave, blocking, mayGoOn, mayFollowUp }) → the finished check,
  * with `said` (what the people asked at the end answered, as mergeSaid gives it) and `checks`, `unlisted`
  * and `blocked` from the opening request, acted upon only with `blocking`.
  * send(request) → { answers, tokens, usd } is `ask` bound to a provider. onWave(wave, reactions) is called
@@ -75,8 +75,10 @@ export function mergeSaid(parts, missing = {}) {
  * would not post is read by nobody.
  * mayGoOn(wave): called after a wave that travels; false stops the check there, for a caller with a
  * clock or a budget of its own.
+ * mayFollowUp(waves): called before a preset's follow-up question; false skips it and leaves followUp
+ * null, for a caller that finds the waves too poorly answered to be worth it.
  */
-export async function runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves = WAVES.length, onWave, blocking = false, mayGoOn }) {
+export async function runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves = WAVES.length, onWave, blocking = false, mayGoOn, mayFollowUp }) {
   const preset = PRESETS[presetId];
   if (!preset) throw new Error(`unknown preset: ${presetId}`);
   const people = crowd(pool);
@@ -136,7 +138,7 @@ export async function runCheck({ send, presetId, pool, text, versionId, prices, 
   }
 
   let followUp = null;
-  if (preset.followUp) {
+  if (preset.followUp && mayFollowUp?.(waves) !== false) {
     const answers = preset.followUp.answers ?? priceLadder(prices ?? [5, 9, 19, 49], currency);
     const stopped = people.filter((persona) => preset.reactions[reached.get(persona.id)]?.stopped);
     const totals = Object.fromEntries(Object.keys(answers).map((id) => [id, 0]));
