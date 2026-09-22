@@ -74,19 +74,24 @@ export function segments(presetId, keys, reactions, people) {
     }));
 }
 
-/** What the feed algorithm scores people by (feed.js): a temper would name the trolls of every broad text, and a city is not whom a text is written for. */
-const SCORED = ['interest', 'field', 'age', 'shopping', 'budget'];
+/**
+ * What the feed algorithm scores people by (feed.js:namesOf): a temper would name the trolls of every
+ * broad text, and a city is not whom a text is written for. Shopping and budget count only for a market.
+ */
+const SCORED = ['interest', 'field', 'age'];
+const SCORED_IN_MARKET = [...SCORED, 'shopping', 'budget'];
 
 /**
  * The group most often annoyed among the people the text reached: at least MIN_SEGMENT of them reached,
  * at least 8 annoyed, and 1.3 times the share of the whole reach. Counted over the reached, since a
  * group shown the text more would otherwise look more annoyed. → a segment of segments(), or null
  */
-export function mostAnnoyed(all, totals) {
+export function mostAnnoyed(all, totals, presetId) {
   if (!totals.reach) return null;
   const share = totals.sorry / totals.reach;
+  const scored = PRESETS[presetId].market ? SCORED_IN_MARKET : SCORED;
   return all
-    .filter((segment) => SCORED.includes(segment.attribute) && segment.reached >= MIN_SEGMENT && segment.sorry >= 8 && segment.sorry / segment.reached >= 1.3 * share)
+    .filter((segment) => scored.includes(segment.attribute) && segment.reached >= MIN_SEGMENT && segment.sorry >= 8 && segment.sorry / segment.reached >= 1.3 * share)
     .sort((a, b) => b.sorry / b.reached - a.sorry / a.reached)[0] ?? null;
 }
 

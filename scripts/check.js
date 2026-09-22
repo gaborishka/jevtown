@@ -116,6 +116,6 @@ for (const list of LISTS) {
   const split = list === 'scrolled' && whySplit(view);
   if (split) console.log(`  about the text ${percent(split.text)}, about who was reading ${percent(split.readers)}`);
 }
-const annoyed = mostAnnoyed(all, totals);
+const annoyed = mostAnnoyed(all, totals, presetId);
 if (annoyed) console.log(`\nmost often annoyed: ${name(annoyed)}, ${annoyed.sorry} of the ${annoyed.reached} who saw it`);
 console.log(`\n${result.requests} requests, ${result.tokens.toLocaleString('en')} tokens, $${result.usd.toFixed(4)}, ${result.seconds.toFixed(1)} s${result.failed ? `, ${result.failed} batches failed` : ''}`);

@@ -1023,7 +1023,7 @@ function postPage(view, post) {
       const shownSegments = standing.length ? standing : biggestSegments(all, audience, 7);
       const rows = shownSegments.map((segment) => ({ label: groupLabel(segment.attribute, segment.value), value: segment[audience] / segment.size, text: percent(segment[audience] / segment.size), note: `${t.n(segment[audience])} / ${t.n(segment.size)}`, color: views[audience], group: [segment.attribute, segment.value] }));
       // Shares of whole groups favour the groups the feed showed the text to most; the most annoyed are counted over those who saw it.
-      const annoyed = audience === 'sorry' && mostAnnoyed(all, totals);
+      const annoyed = audience === 'sorry' && mostAnnoyed(all, totals, post.preset);
       put(audienceBody,
         h('h3', {}, t.blocks.titles[audience]),
         h('p', { class: 'hint' }, standing.length ? t.blocks.segmentNote(t.blocks.tabs[audience].toLowerCase(), percent(totals[audience] / reactions.length)) : t.blocks.alike),
