@@ -8,8 +8,8 @@
 import { persona, poolFor, CROWD } from '../public/shared/personas.js';
 import { unpackCrowd, interestsAt } from '../public/shared/pack.js';
 import { PRESETS, priceLadder } from '../public/shared/presets.js';
-import { reactionRequest, followUpRequest, openingRequest, openingAnswers, questionId, MAX_TEXT_CHARS, UNLISTED, UNLISTED_FROM } from '../public/shared/requests.js';
-import { firstWave, nextWave, mood, travels, gatherAsked, anyoneLeft, emptyGathered, WAVES } from '../public/shared/feed.js';
+import { reactionRequest, followUpRequest, openingRequest, openingAnswers, audienceRequest, audienceAnswers, questionId, MAX_TEXT_CHARS, MAX_AUDIENCE_CHARS, UNLISTED, UNLISTED_FROM } from '../public/shared/requests.js';
+import { firstWave, nextWave, mood, travels, gatherAsked, anyoneLeft, emptyGathered, partsOf, audienceOf, audienceMask, MIN_AUDIENCE, WAVES } from '../public/shared/feed.js';
 import { drawReaction, drawAnswer } from '../public/shared/draw.js';
 import { counters } from '../public/shared/summary.js';
 import { ask, pickProvider, PROVIDERS } from '../public/shared/jev.js';
@@ -118,8 +118,9 @@ const readVersion = async (env, post, number) => {
   return row && { ...row, plan: JSON.parse(row.plan), options: JSON.parse(row.options), summary: row.summary && JSON.parse(row.summary) };
 };
 
-// POST /api/check { preset, text, prices, currency, nickname, listed, post, pool? } → the first wave to run.
+// POST /api/check { preset, text, prices, currency, nickname, listed, post, pool?, audience? } → the first wave to run.
 // The crowd that reads a text is the one that speaks its language; `pool` is for callers that know better.
+// `audience` says in words whom the text is for; only the people who fit it read the text.
 async function handleCheck(request, env, url) {
   if (foreign(request, url)) return refuse('origin', 'wrong origin', 403);
   const body = await request.json().catch(() => null);
@@ -127,6 +128,8 @@ async function handleCheck(request, env, url) {
   const text = String(body?.text ?? '').trim();
   if (!preset || (body.pool != null && !POOLS[body.pool])) return refuse('bad_request', 'unknown preset or crowd');
   if (!text || text.length > MAX_TEXT_CHARS) return refuse('bad_text', `the text must be 1 to ${MAX_TEXT_CHARS} characters`);
+  const description = String(body.audience ?? '').replace(/\s+/g, ' ').trim();
+  if (description.length > MAX_AUDIENCE_CHARS) return refuse('bad_audience', `the audience description must be at most ${MAX_AUDIENCE_CHARS} characters`);
   const provider = pickProvider(env);
   if (!provider) return refuse('no_key', `neither ${Object.values(PROVIDERS).map((known) => known.keyName).join(' nor ')} is set`, 500);
 
@@ -151,47 +154,77 @@ async function handleCheck(request, env, url) {
   if (!secret) secret = randomId(16);
   const author = await sha(`author|${secret}`, 12);
 
-  // A new version of an existing post: only by its author, with the same preset; the crowd stays the same.
+  // A new version of an existing post: only by its author, with the same preset; the crowd and the audience stay the same.
   let post = null;
+  let kept = null;
   if (body.post) {
-    post = await env.DB.prepare('SELECT id, author, preset, pool, created_at, (SELECT MAX(number) FROM versions WHERE post = posts.id) AS versions FROM posts WHERE id = ?').bind(String(body.post)).first();
+    post = await env.DB.prepare('SELECT id, author, preset, pool, audience, created_at, (SELECT MAX(number) FROM versions WHERE post = posts.id) AS versions FROM posts WHERE id = ?').bind(String(body.post)).first();
     if (!post || post.author !== author) return refuse('not_yours', 'only the author can add a version', 403);
     if (post.preset !== body.preset) return refuse('bad_request', 'a version keeps the preset of its post');
     const running = await env.DB.prepare("SELECT COUNT(*) AS running FROM versions WHERE post = ? AND state = 'running' AND created_at > ?").bind(post.id, new Date(Date.now() - STALE_RUN_MS).toISOString()).first('running');
     if (running) return refuse('busy', 'the previous version is still running', 409);
+    // The audience as Jev read it for the post: a version asks nothing about it, so its cut cannot move.
+    if (post.audience) kept = JSON.parse(await env.DB.prepare('SELECT plan FROM versions WHERE post = ? ORDER BY number DESC LIMIT 1').bind(post.id).first('plan')).audience ?? null;
   }
 
   const pool = post?.pool ?? body.pool ?? poolFor(text);
-  const opening = await ask(provider, openingRequest(body.preset, text), { left: RETRIES_PER_BATCH });
-  const { scores, unlisted, blocked, checks } = openingAnswers(opening.answers);
-  if (blocked.length) {
-    // Nothing of the text is kept. The question to Jev was paid for and the attempt counts towards the day's limit.
+  // A new post with an audience asks Jev about the description alongside the text, in a request of its own.
+  const describing = !post && description;
+  const [openingOutcome, audienceOutcome] = await Promise.allSettled([
+    ask(provider, openingRequest(body.preset, text), { left: RETRIES_PER_BATCH }),
+    describing ? ask(provider, audienceRequest(description), { left: RETRIES_PER_BATCH }) : null,
+  ]);
+  const paidFor = (attempt, number = 0) => [[openingOutcome, 's'], [audienceOutcome, 'a']].filter(([outcome]) => outcome.status === 'fulfilled' && outcome.value)
+    .map(([{ value }, stage]) => env.DB.prepare('INSERT INTO batches (post, number, stage, n, result, usd, tokens, day) VALUES (?, ?, ?, 0, NULL, ?, ?, ?)').bind(attempt, number, stage, value.usd, value.tokens, today()));
+  const failed = [openingOutcome, audienceOutcome].find((outcome) => outcome.status === 'rejected');
+  if (failed) {
+    // What was answered is paid for and counted; the attempt is not a check, so it takes nothing of the day's limit.
+    const answered = paidFor(randomId(5));
+    if (answered.length) await env.DB.batch(answered);
+    return refuse(failed.reason.throttled ? 'throttled' : 'jev', failed.reason.message, failed.reason.throttled ? 429 : 502);
+  }
+  /** Nothing of the text is kept. The questions to Jev were paid for and the attempt counts towards the day's limit. */
+  const refuseAttempt = async (code, message, more = {}) => {
     const attempt = randomId(5);
-    await env.DB.batch([
-      env.DB.prepare('INSERT INTO batches (post, number, stage, n, result, usd, tokens, day) VALUES (?, 0, ?, 0, NULL, ?, ?, ?)').bind(attempt, 's', opening.usd, opening.tokens, today()),
-      env.DB.prepare('INSERT INTO checks (visitor, day, post, created_at) VALUES (?, ?, ?, ?)').bind(visitor, today(), attempt, new Date().toISOString()),
-    ]);
-    return refuse('blocked', `not posted: ${blocked.join(', ')}`, 422, { reasons: blocked });
+    await env.DB.batch([...paidFor(attempt), env.DB.prepare('INSERT INTO checks (visitor, day, post, created_at) VALUES (?, ?, ?, ?)').bind(visitor, today(), attempt, new Date().toISOString())]);
+    return refuse(code, message, 422, more);
+  };
+  const opening = openingOutcome.value;
+  const { scores, unlisted, blocked, checks } = openingAnswers(opening.answers);
+  if (blocked.length) return refuseAttempt('blocked', `not posted: ${blocked.join(', ')}`, { reasons: blocked });
+
+  let audience = kept && { ...kept };
+  if (describing) {
+    const read = audienceAnswers(audienceOutcome.value.answers);
+    if (read.blocked.length) return refuseAttempt('blocked', `not posted: the audience description has ${read.blocked.join(', ')}`, { reasons: read.blocked, field: 'audience' });
+    const parts = partsOf(read.scores, read.named);
+    if (!parts) return refuseAttempt('no_fit', 'the town cannot tell who fits the audience description');
+    audience = { text: description, scores: read.scores, named: read.named, parts, unlisted: read.unlisted };
   }
   const id = post?.id ?? randomId(5);
   const number = (post?.versions ?? 0) + 1;
   const now = new Date().toISOString();
   const size = await townSize(env, pool);
-  const ids = firstWave(await townOf(env, pool, size), scores, body.preset, rng(hash32('waves', id, number))).map((who) => who.id);
+  const town = await townOf(env, pool, size);
+  // The members are counted over today's town, so a resident who moved in since and fits reads a new version too.
+  const members = audience ? audienceOf(town, audience.parts) : town;
+  if (describing && members.length < MIN_AUDIENCE) return refuseAttempt('few_fit', `${members.length} people in town fit the audience description`, { fits: members.length });
+  if (audience) audience.size = members.length;
+  const ids = firstWave(members, scores, body.preset, rng(hash32('waves', id, number))).map((who) => who.id);
   const current = { kind: 'wave', index: 0, ids };
-  const listed = body.listed !== false && !unlisted.length ? 1 : 0;
+  const listed = body.listed !== false && !unlisted.length && !audience?.unlisted.length ? 1 : 0;
   const nickname = String(body.nickname ?? '').replace(/\s+/g, ' ').trim().slice(0, 32) || 'anonymous';
 
   await env.DB.batch([
     post
       ? env.DB.prepare('UPDATE posts SET listed = MIN(listed, ?), nickname = ? WHERE id = ?').bind(listed, nickname, id)
-      : env.DB.prepare('INSERT INTO posts (id, author, nickname, preset, pool, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, author, nickname, body.preset, pool, listed, now),
-    env.DB.prepare('INSERT INTO versions (post, number, text, options, state, plan, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, number, text, JSON.stringify(options), 'running', JSON.stringify({ scores, unlisted, checks, waves: [], current, size }), now),
-    env.DB.prepare('INSERT INTO batches (post, number, stage, n, result, usd, tokens, day) VALUES (?, ?, ?, 0, NULL, ?, ?, ?)').bind(id, number, 's', opening.usd, opening.tokens, today()),
+      : env.DB.prepare('INSERT INTO posts (id, author, nickname, preset, pool, listed, created_at, audience) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, author, nickname, body.preset, pool, listed, now, audience?.text ?? null),
+    env.DB.prepare('INSERT INTO versions (post, number, text, options, state, plan, audience, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(id, number, text, JSON.stringify(options), 'running', JSON.stringify({ scores, unlisted, checks, audience, waves: [], current, size }), audience ? audienceMask(members, size) : null, now),
+    ...paidFor(id, number),
     env.DB.prepare('INSERT INTO checks (visitor, day, post, created_at) VALUES (?, ?, ?, ?)').bind(visitor, today(), id, now),
   ]);
   const cookie = isNewAuthor ? authorCookie(secret, url) : {};
-  return json({ post: id, number, pool, size, scores, unlisted, stage: stageAnswer(current) }, 200, cookie);
+  return json({ post: id, number, pool, size, scores, unlisted, audience, stage: stageAnswer(current) }, 200, cookie);
 }
 
 /**
@@ -298,11 +331,14 @@ async function handleWave(env, url) {
     const wave = { index: current.index, size: drawn.length, mood: mood(version.preset, drawn), travels: travels(version.preset, drawn) };
     plan.waves.push(wave);
     plan.gathered = gatherAsked(version.preset, current.ids, (id) => keys[reactions[id] - 1], plan.gathered ?? emptyGathered(), weightOf);
-    const mayGoOn = wave.travels && current.index + 1 < maxWaves && anyoneLeft(reactions) && !(dailyBudget && (await spentToday(env)) >= dailyBudget);
+    // With an audience, the members stored when the check began: never recomputed, so a resident moving out changes nothing.
+    const inTown = version.audience ? crowdBytes(version.audience, size) : null;
+    const mayGoOn = wave.travels && current.index + 1 < maxWaves && anyoneLeft(reactions, inTown) && !(dailyBudget && (await spentToday(env)) >= dailyBudget);
     if (mayGoOn) {
       const reached = new Map();
       reactions.forEach((byte, id) => byte && reached.set(id, keys[byte - 1]));
-      const ids = nextWave(await townOf(env, version.pool, size), reached, plan.scores, version.preset, current.index + 1, rng(hash32('waves', post, number, current.index + 1))).map((who) => who.id);
+      const everybody = await townOf(env, version.pool, size);
+      const ids = nextWave(inTown ? everybody.filter((who) => inTown[who.id]) : everybody, reached, plan.scores, version.preset, current.index + 1, rng(hash32('waves', post, number, current.index + 1))).map((who) => who.id);
       if (ids.length) next = { kind: 'wave', index: current.index + 1, ids };
     }
     if (!next && preset.followUp) {
@@ -349,14 +385,14 @@ function publicVersion(version, done = []) {
   const { plan } = version;
   return {
     number: version.number, text: version.text, options: version.options, state: version.state, createdAt: version.created_at,
-    scores: plan.scores, unlisted: plan.unlisted ?? [], checks: plan.checks ?? null, waves: plan.waves, summary: version.summary ?? null,
+    scores: plan.scores, unlisted: plan.unlisted ?? [], checks: plan.checks ?? null, audience: plan.audience ?? null, waves: plan.waves, summary: version.summary ?? null,
     stage: version.state === 'running' && plan.current ? stageAnswer(plan.current, done) : null,
   };
 }
 
 // GET /api/post/<id> → the post with all its versions.
 async function handlePost(request, env, id) {
-  const post = await env.DB.prepare('SELECT id, author, nickname, preset, pool, listed, created_at FROM posts WHERE id = ?').bind(id).first();
+  const post = await env.DB.prepare('SELECT id, author, nickname, preset, pool, listed, audience, created_at FROM posts WHERE id = ?').bind(id).first();
   if (!post) return refuse('not_found', 'no such post', 404);
   const { results } = await env.DB.prepare('SELECT post, number, text, options, state, plan, summary, created_at FROM versions WHERE post = ? ORDER BY number').bind(id).all();
   const versions = [];
@@ -373,15 +409,23 @@ async function handlePost(request, env, id) {
   return json({ ...rest, listed: Boolean(post.listed), createdAt, mine: author === (await authorOf(request)), versions });
 }
 
-// GET /api/reactions/<post>/<number> → three bytes a person, 30,000 and up: the reaction of every persona,
-// then the wave that reached it, then its follow-up answer. A finished version never changes, so it is cached for good.
-async function handleReactions(env, path) {
+/** The planes of a version a caller may ask for after the three every answer has: `audience` is 1 for a member of the post's audience. */
+const PLANES = ['audience'];
+
+// GET /api/reactions/<post>/<number>?planes= → three bytes a person, 30,000 and up: the reaction of every persona,
+// then the wave that reached it, then its follow-up answer, then a byte for each plane asked for, in the order asked
+// (zeros when the version has none). A finished version never changes, so it is cached for good.
+async function handleReactions(env, path, url) {
   const [post, number] = path.split('/');
-  const row = await env.DB.prepare('SELECT state, reactions, waves, answers FROM versions WHERE post = ? AND number = ?').bind(post, Number(number)).first();
+  const planes = (url.searchParams.get('planes') ?? '').split(',').filter(Boolean);
+  if (planes.some((plane) => !PLANES.includes(plane))) return refuse('bad_request', `planes can be: ${PLANES.join(', ')}`);
+  const row = await env.DB.prepare('SELECT state, reactions, waves, answers, audience FROM versions WHERE post = ? AND number = ?').bind(post, Number(number)).first();
   if (!row) return new Response('not found', { status: 404 });
-  const size = Math.max(CROWD, bytesOf(row.reactions).length); // the town as it was when the text was posted
-  const body = new Uint8Array(size * 3);
-  [row.reactions, row.waves, row.answers].forEach((blob, part) => body.set(bytesOf(blob), part * size));
+  const stored = [row.reactions, row.waves, row.answers, ...planes.map((plane) => row[plane])];
+  // The town as it was when the text was posted: an audience's mask has it before the first wave is stored.
+  const size = Math.max(CROWD, ...[row.reactions, row.audience].map((blob) => bytesOf(blob).length));
+  const body = new Uint8Array(size * stored.length);
+  stored.forEach((blob, part) => body.set(bytesOf(blob), part * size));
   return new Response(body, { headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': row.state === 'done' ? 'public, max-age=31536000, immutable' : 'no-store', 'X-Content-Type-Options': 'nosniff' } });
 }
 
@@ -389,7 +433,7 @@ async function handleReactions(env, path) {
 async function handleFeed(env, url) {
   const order = url.searchParams.get('sort') === 'top' ? 'reach DESC, glad DESC' : 'finished_at DESC';
   const { results } = await env.DB.prepare(
-    `SELECT id, nickname, preset, pool, version, snippet, reach, stopped, glad, sorry, created_at AS createdAt, finished_at AS finishedAt,
+    `SELECT id, nickname, preset, pool, audience, version, snippet, reach, stopped, glad, sorry, created_at AS createdAt, finished_at AS finishedAt,
        (SELECT COUNT(*) FROM versions WHERE post = posts.id) AS versions FROM posts
      WHERE listed = 1 AND version > 0 ORDER BY ${order} LIMIT ?`,
   ).bind(FEED_POSTS).all();
@@ -638,7 +682,7 @@ export default {
       if (path === '/api/me') return json(await readMe(env, await authorOf(request)));
       if (path === '/api/residents') return await handleResidents(env);
       if (path.startsWith('/api/post/')) return await handlePost(request, env, path.slice('/api/post/'.length));
-      if (path.startsWith('/api/reactions/')) return await handleReactions(env, path.slice('/api/reactions/'.length));
+      if (path.startsWith('/api/reactions/')) return await handleReactions(env, path.slice('/api/reactions/'.length), url);
       if (path.startsWith('/api/persona/')) return await handlePersona(env, path.slice('/api/persona/'.length));
       if (path.startsWith('/og/')) return await handleOg(request, env, ctx, path.slice('/og/'.length));
       if (path === '/' || path === '/crowd' || path === '/me' || path.startsWith('/p/') || path.startsWith('/u/')) return await servePage(request, env, url);
