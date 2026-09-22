@@ -1,6 +1,7 @@
 // Step 0 of the plan: measurements with a real key, before any interface exists.
 //   node --env-file=.env.local scripts/probe.js attributes batch presets crowd waves
 // `town` measures what the town is asked when a check closes and the text checks; its gates decide which stay.
+// It is paid, about $0.22, and stops at PROBE_BUDGET_USD like every step.
 // Raw numbers go to data/probe/*.json (not committed); the conclusions are in docs/measurements.md.
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { crowd, withAttributes } from '../public/shared/personas.js';

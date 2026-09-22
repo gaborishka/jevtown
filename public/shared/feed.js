@@ -161,8 +161,9 @@ export function anyoneLeft(reactions, inTown = null) {
 export const ASK_WEIGHT = 100;
 /**
  * Why is asked of those who got annoyed up to this weight first. In the order the feed picked people
- * they would be few: first waves give sorry reactions 0.00 to 0.01 on five of six strong texts and
- * 0.07 to 0.44 on weak ones (docs/measurements.md §6), so a mixed sample of spam would be mostly scrollers.
+ * they would be few: first waves give sorry reactions 0.00 to 0.01 on five of six strong texts, and
+ * 0.07, 0.19 and 0.44 on the spam, the rage post and the scam listing (docs/measurements.md §6), so a
+ * mixed sample of the spam would be mostly scrollers.
  */
 export const SORRY_WHY = 40;
 /** A question is asked only when this many people fit: fewer would pay for a list the page does not show. */
