@@ -117,12 +117,12 @@ const uk = {
     annoyedGroup: (group, sorry, reached) => `Найчастіше роздратувалися в групі «${group}»: ${number('uk')(sorry)} з ${number('uk')(reached)} тих, хто побачив.`,
   },
   said: {
-    tabs: { scrolled: 'Чому пройшли повз', sorry: 'Чому роздратувало', hook: 'Що зупинило', comment: 'Коментували б', depth: 'Як далеко читали' },
-    titles: { scrolled: 'Чому проскролили', sorry: 'Чому роздратувалися', hook: 'Що зупинило тих, кому сподобалось', comment: 'Що написали б у коментарях', depth: 'Як далеко читали' },
+    tabs: { scrolled: 'Чому пройшли повз', sorry: 'Чому роздратувало', hook: 'Що зупинило', comment: 'Коментували б' },
+    titles: { scrolled: 'Чому проскролили', sorry: 'Чому роздратувалися', hook: 'Що зупинило тих, кому сподобалось', comment: 'Що написали б у коментарях' },
     // Each is followed by `order`.
     notes: {
       scrolled: (asked) => `Спитали ${number('uk')(asked)} з тих, хто проскролив`, sorry: (asked) => `Спитали ${number('uk')(asked)} з тих, кого роздратувало`, hook: (asked) => `Спитали ${number('uk')(asked)} з тих, кому сподобалось`,
-      comment: (asked) => `Спитали ${number('uk')(asked)} з тих, хто зупинився`, depth: (asked) => `Спитали ${number('uk')(asked)} з тих, хто зупинився`,
+      comment: (asked) => `Спитали ${number('uk')(asked)} з тих, хто зупинився`,
     },
     order: ', у порядку, в якому стрічка показувала їм текст, тож здебільшого тих, для кого цей текст.',
     commentNote: '«Не коментує» теж відповідь, а частки порахано серед тих, про кого Jev щось зміг сказати.',
@@ -140,18 +140,15 @@ const uk = {
         curiosity: 'цікавість', promise: 'обіцянка', detail: 'конкретна цифра чи деталь', news: 'звучить як новина',
       },
       comment: { adds_own: 'погоджується й додає свій досвід', question: 'питає автора', argues: 'сперечається чи вказує на помилку', thanks: 'дякує чи хвалить кількома словами', joke: 'жартує', tags: 'позначає друга', none: 'не коментує' },
-      depth: { first_sentence: 'лише перше речення', half: 'приблизно половину', to_end: 'до кінця' },
     },
   },
   checks: {
     title: 'Як Jev читає сам текст',
     note: 'Це відповіді Jev про сам текст, а не реакції міста. На те, хто його побачить, вони не впливають.',
-    onlyYou: 'Останній рядок бачите лише ви.',
     labels: {
-      point_first: { post: 'Головне сказано в першому реченні', listing: 'Перше речення каже, що продається', product: 'Перше речення каже, що це і що воно дає' },
+      point_first: { listing: 'Перше речення каже, що продається' },
       ask: { post: 'Зрозуміло, чого автор хоче від читача', listing: 'Сказано, як відбудеться угода', product: 'Сказано, що робити далі' },
       concrete: 'Є конкретна цифра, назва чи приклад',
-      ai: 'Читається як написаний ШІ',
     },
     values: { yes: 'так', no: 'ні', unclear: 'неясно' },
   },
@@ -324,12 +321,12 @@ const en = {
     annoyedGroup: (group, sorry, reached) => `The group most often annoyed among those who saw it: “${group}”, ${number('en')(sorry)} of ${number('en')(reached)}.`,
   },
   said: {
-    tabs: { scrolled: 'Why they passed', sorry: 'Why annoyed', hook: 'What stopped them', comment: 'Would comment', depth: 'How far they read' },
-    titles: { scrolled: 'Why they scrolled past', sorry: 'Why they got annoyed', hook: 'What stopped the people who liked it', comment: 'What they would write in the comments', depth: 'How far they read' },
+    tabs: { scrolled: 'Why they passed', sorry: 'Why annoyed', hook: 'What stopped them', comment: 'Would comment' },
+    titles: { scrolled: 'Why they scrolled past', sorry: 'Why they got annoyed', hook: 'What stopped the people who liked it', comment: 'What they would write in the comments' },
     // Each is followed by `order`.
     notes: {
       scrolled: (asked) => `Asked of ${number('en')(asked)} people who scrolled past`, sorry: (asked) => `Asked of ${number('en')(asked)} people who got annoyed`, hook: (asked) => `Asked of ${number('en')(asked)} people who liked it`,
-      comment: (asked) => `Asked of ${number('en')(asked)} people who stopped`, depth: (asked) => `Asked of ${number('en')(asked)} people who stopped`,
+      comment: (asked) => `Asked of ${number('en')(asked)} people who stopped`,
     },
     order: ', in the order the feed showed them the text, so mostly those it was meant for.',
     commentNote: 'Not commenting is one of the answers, and the shares are among the people Jev could place.',
@@ -347,18 +344,15 @@ const en = {
         curiosity: 'curiosity', promise: 'the promise', detail: 'a concrete number or detail', news: 'it sounds new or important',
       },
       comment: { adds_own: 'agrees and adds their own experience', question: 'asks the author a question', argues: 'argues or points out a mistake', thanks: 'thanks or praises in a few words', joke: 'jokes', tags: 'tags a friend', none: 'would not comment' },
-      depth: { first_sentence: 'only the first sentence', half: 'about half', to_end: 'to the end' },
     },
   },
   checks: {
     title: 'How Jev reads the text',
     note: 'Jev’s answers about the text itself, not the town’s reactions. They do not change who sees it.',
-    onlyYou: 'Only you see the last line.',
     labels: {
-      point_first: { post: 'The main point is in the first sentence', listing: 'The first sentence says what is for sale', product: 'The first sentence says what it is and what it gives' },
+      point_first: { listing: 'The first sentence says what is for sale' },
       ask: { post: 'Clear what readers should do', listing: 'Says how the deal is done', product: 'Says what to do next' },
       concrete: 'Has a concrete number, name or example',
-      ai: 'Reads as written by AI',
     },
     values: { yes: 'yes', no: 'no', unclear: 'unclear' },
   },

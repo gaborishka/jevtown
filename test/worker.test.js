@@ -72,11 +72,11 @@ const LONG_POST = 'Tomatoes need warm nights. '.repeat(8);
 const VERSION = { post: 'p1', number: 1, preset: 'post', pool: 'uk', text: LONG_POST };
 const KEYS = Object.keys(PRESETS.post.reactions);
 const range = (from, count) => Array.from({ length: count }, (_, i) => from + i);
-// Twenty who scrolled past and twenty who liked it: why, hook, comment and depth are asked.
+// Twenty who scrolled past and twenty who liked it: why, hook and comment are asked.
 const REACTIONS = Uint8Array.from({ length: 10_000 }, (_, id) => (id < 20 ? 1 + KEYS.indexOf('scrolled_past') : id < 40 ? 1 + KEYS.indexOf('liked') : 0));
 const PLAN = { gathered: { scrolled: range(0, 20), sorry: [], glad: range(20, 20), stopped: range(20, 20) } };
 const part = (list) => ({ lists: { [list]: { asked: 20, totals: { cant_tell: 2 } } }, picks: {} });
-const STORED = [['y', 'scrolled'], ['h', 'hook'], ['c', 'comment'], ['d', 'depth']].map(([stage, list]) => ({ stage, result: JSON.stringify(part(list)) }));
+const STORED = [['y', 'scrolled'], ['h', 'hook'], ['c', 'comment']].map(([stage, list]) => ({ stage, result: JSON.stringify(part(list)) }));
 
 /** D1 as far as town.js uses it, answering by the start of the SQL; every statement run is kept. */
 function fakeD1({ stored = [], locked = true, down = false } = {}) {
@@ -114,7 +114,7 @@ function townWith(t, db, { spent = false, failing = null } = {}) {
 }
 
 test('a close reuses what an earlier close stored, skips on a spent budget and asks the rest', () => {
-  assert.deepEqual(toAsk(['why', 'hook', 'depth'], { hook: part('hook') }, false), { reuse: { hook: part('hook') }, ask: ['why', 'depth'], skipped: [] });
+  assert.deepEqual(toAsk(['why', 'hook', 'comment'], { hook: part('hook') }, false), { reuse: { hook: part('hook') }, ask: ['why', 'comment'], skipped: [] });
   assert.deepEqual(toAsk(['why', 'hook'], { hook: part('hook') }, true), { reuse: { hook: part('hook') }, ask: [], skipped: ['why'] });
 });
 
@@ -122,8 +122,8 @@ test('the last close asks the town once, holding the asking, and stores every an
   const db = fakeD1();
   const town = townWith(t, db);
   const { said } = await town.ask();
-  assert.equal(town.fetch.mock.callCount(), 4);
-  assert.deepEqual(Object.keys(said.lists), ['scrolled', 'hook', 'comment', 'depth']);
+  assert.equal(town.fetch.mock.callCount(), 3);
+  assert.deepEqual(Object.keys(said.lists), ['scrolled', 'hook', 'comment']);
   assert.deepEqual(said.missing, {});
   assert.equal(said.lists.hook.asked, 20);
   const [select, lock, ...stored] = db.ran;
@@ -137,7 +137,7 @@ test('a close with every answer stored sends nothing', async (t) => {
   const town = townWith(t, fakeD1({ stored: STORED }));
   const { said } = await town.ask();
   assert.equal(town.fetch.mock.callCount(), 0);
-  assert.deepEqual(said.lists.depth, part('depth').lists.depth);
+  assert.deepEqual(said.lists.comment, part('comment').lists.comment);
 });
 
 test('a close that does not win the asking waits for the one that did', async (t) => {
@@ -152,14 +152,14 @@ test('a spent budget leaves out what was not stored yet', async (t) => {
   const { said } = await town.ask();
   assert.equal(town.fetch.mock.callCount(), 0);
   assert.deepEqual(said.missing, { scrolled: 'budget' });
-  assert.deepEqual(Object.keys(said.lists), ['hook', 'comment', 'depth']);
+  assert.deepEqual(Object.keys(said.lists), ['hook', 'comment']);
 });
 
 test('when D1 fails, the check still closes with the lists marked failed', async (t) => {
   const logged = t.mock.method(console, 'error', () => {});
   const town = townWith(t, fakeD1({ down: true }));
   const { said } = await town.ask();
-  assert.deepEqual(said, { lists: {}, picks: {}, missing: { scrolled: 'failed', hook: 'failed', comment: 'failed', depth: 'failed' } });
+  assert.deepEqual(said, { lists: {}, picks: {}, missing: { scrolled: 'failed', hook: 'failed', comment: 'failed' } });
   assert.equal(town.fetch.mock.callCount(), 0);
   assert.equal(logged.mock.callCount(), 1);
 });
@@ -170,9 +170,9 @@ test('a question Jev fails leaves out its own lists and keeps what the others pa
   const town = townWith(t, db, { failing: 'hook' });
   const { said } = await town.ask();
   assert.deepEqual(said.missing, { hook: 'failed' });
-  assert.deepEqual(Object.keys(said.lists), ['scrolled', 'comment', 'depth']);
+  assert.deepEqual(Object.keys(said.lists), ['scrolled', 'comment']);
   const stored = db.ran.filter((statement) => statement.sql.startsWith('INSERT INTO batches'));
-  assert.deepEqual(stored.map((statement) => statement.args[2]).sort(), ['c', 'd', 'y']);
+  assert.deepEqual(stored.map((statement) => statement.args[2]).sort(), ['c', 'y']);
   assert.equal(logged.mock.callCount(), 1);
   assert.deepEqual(logged.mock.calls[0].arguments.slice(0, 2), ['ask', 'hook']);
 });

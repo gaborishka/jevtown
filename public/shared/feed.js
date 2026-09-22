@@ -234,7 +234,7 @@ export function whoIsAsked(question, gathered, weightOf = () => 1) {
 
 /** The closing questions of a text and who each goes to; a question with fewer than MIN_ASKED people is left out. → [{ question, ids }] */
 export function asking(presetId, text, gathered, weightOf = () => 1) {
-  return asksFor(presetId, text)
+  return asksFor(presetId)
     .map((question) => ({ question, ids: whoIsAsked(question, gathered, weightOf) }))
     .filter((asked) => asked.ids.length >= MIN_ASKED);
 }

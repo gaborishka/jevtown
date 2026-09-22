@@ -216,29 +216,13 @@ export const ASKS = {
       none: 'Would not comment',
     },
   },
-  depth: {
-    ask: 'How far into it do they read?',
-    presets: ['post', 'listing'],
-    answers: { first_sentence: 'Only the first sentence', half: 'About half', to_end: 'To the end' },
-  },
 };
-
-/**
- * How far people read is asked only of a text with somewhere to stop: "the first sentence", "about
- * half" and "to the end" are three different places from three sentences on, and under 200 characters
- * (four or five lines on a phone at about 45 characters a line) three sentences are taken in at a glance.
- */
-export const DEPTH_FROM = 200;
-export const DEPTH_SENTENCES = 3;
-
-/** How many sentences a text has. A sentence ends at a line break, or at . ! ? … before a space, so "2.5" and "shop.com" end none. */
-export const sentences = (text) => text.split(/[.!?…]+(?=\s|$)|\n/).filter((part) => /[\p{L}\p{N}]/u.test(part)).length;
 
 /**
  * Where the answers are kept: a list per question, and two for why, since those who scrolled past
  * and those who got annoyed are offered different reasons and shown apart.
  */
-export const LISTS = ['scrolled', 'sorry', 'hook', 'comment', 'depth'];
+export const LISTS = ['scrolled', 'sorry', 'hook', 'comment'];
 /** The list an answer goes to: for why, the look of the person's reaction; for the rest, the question's own. */
 export const listOf = (question, look) => (question === 'why' ? look : question);
 export const questionOfList = (list) => (list === 'scrolled' || list === 'sorry' ? 'why' : list);
@@ -251,7 +235,4 @@ export function answersFor(question, presetId, look) {
 }
 
 /** The questions a text is asked when its check closes, in the order of ASKS. */
-export function asksFor(presetId, text) {
-  const long = text.length >= DEPTH_FROM && sentences(text) >= DEPTH_SENTENCES;
-  return Object.keys(ASKS).filter((question) => ASKS[question].presets.includes(presetId) && (question !== 'depth' || long));
-}
+export const asksFor = (presetId) => Object.keys(ASKS).filter((question) => ASKS[question].presets.includes(presetId));

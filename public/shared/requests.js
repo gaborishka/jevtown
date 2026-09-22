@@ -113,11 +113,10 @@ export const BLOCKED_FROM = 0.85;
  * a headline is one line, and its only ask is the click.
  */
 export const TEXT_CHECKS = {
+  // Asked of a listing only: for a post and a product Jev answered near 0.5 whether the point came first (docs/measurements.md).
   point_first: {
     ask: {
-      post: 'Does the post say its main point in its first sentence?',
       listing: 'Does the first sentence of the listing say what is for sale?',
-      product: 'Does the first sentence say what the product is and what it does for the buyer?',
     },
     criteria: { true: 'Yes', false: 'No, the main point comes later or not at all' },
   },
@@ -131,7 +130,6 @@ export const TEXT_CHECKS = {
     criteria: { true: 'Yes, it is clear', false: 'No, the reader has to guess' },
   },
   concrete: { ask: 'Does the text have at least one concrete number, name or example?', criteria: { true: 'Yes', false: 'No, it stays general' } },
-  ai: { ask: 'Does the text read as if an AI chatbot wrote it: stock phrases, smooth and generic, nothing only this author would say? The text may be in Ukrainian.', criteria: { true: 'Yes, it reads machine-written', false: 'No, it reads like a person wrote it' } },
 };
 
 /** The text checks a preset is asked. → [[id, instructions, criteria]] */

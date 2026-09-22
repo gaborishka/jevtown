@@ -5,7 +5,7 @@ import { exposure, firstWave, nextWave, travels, mood, gatherAsked, whoIsAsked, 
 import { residentPersona } from '../public/shared/resident.js';
 import { drawReaction, CONFIDENT_FROM } from '../public/shared/draw.js';
 import { reactionRequest, exposureRequest, exposureScores, askRequest, openingAnswers, questionId } from '../public/shared/requests.js';
-import { PRESETS, priceLadder, asksFor, sentences } from '../public/shared/presets.js';
+import { PRESETS, priceLadder, asksFor } from '../public/shared/presets.js';
 import { weightOf } from '../worker/town.js';
 import { rng } from '../public/shared/rng.js';
 
@@ -114,27 +114,13 @@ test('why goes to the annoyed first, up to 40, then to those who scrolled past',
   const kept = groups([], []);
   assert.equal(whoIsAsked('hook', kept), kept.glad);
   assert.equal(whoIsAsked('comment', kept), kept.stopped);
-  assert.equal(whoIsAsked('depth', kept), kept.stopped);
   assert.deepEqual(asking('post', 'short', groups([], range(1000, 9))).map((asked) => asked.question), []);
   assert.deepEqual(asking('post', 'short', groups([], range(1000, 10))).map((asked) => asked.question), ['why']);
 });
 
-test('how far people read is asked only of a longer text of three sentences or more', () => {
-  const three = (a, b, c) => `${'a'.repeat(a)}. ${'b'.repeat(b)}. ${'c'.repeat(c)}.`;
-  assert.equal(three(82, 82, 81).length, 250);
-  assert.equal(three(49, 49, 47).length, 150);
-  assert.deepEqual(asksFor('post', three(82, 82, 81)), ['why', 'hook', 'comment', 'depth']);
-  assert.deepEqual(asksFor('post', three(49, 49, 47)), ['why', 'hook', 'comment']);
-  assert.deepEqual(asksFor('post', 'a'.repeat(250)), ['why', 'hook', 'comment']);
-  assert.deepEqual(asksFor('listing', three(82, 82, 81)), ['why', 'hook', 'depth']);
-  assert.deepEqual(asksFor('product', three(82, 82, 81)), ['why', 'hook']);
-  assert.deepEqual(asksFor('headline', three(82, 82, 81)), ['why', 'hook']);
-  // The edges: 200 characters and three sentences.
-  assert.deepEqual(asksFor('post', three(65, 65, 65)), ['why', 'hook', 'comment', 'depth']);
-  assert.deepEqual(asksFor('post', three(65, 65, 64)), ['why', 'hook', 'comment']);
-  assert.deepEqual(asksFor('post', `${'a'.repeat(120)}. ${'b'.repeat(127)}.`), ['why', 'hook', 'comment']);
-  assert.equal(sentences('Price 2.5 kg. See shop.com. Done!'), 3);
-  assert.equal(sentences('Why? Because… yes\nnext'), 4);
+test('a post is asked why, hook and comment; the other presets why and hook', () => {
+  assert.deepEqual(asksFor('post'), ['why', 'hook', 'comment']);
+  for (const presetId of ['listing', 'product', 'headline']) assert.deepEqual(asksFor(presetId), ['why', 'hook']);
 });
 
 test('a closing question says what the person did, never why, and offers the answers their look has', () => {
@@ -163,7 +149,7 @@ test('a closing question says what the person did, never why, and offers the ans
 });
 
 test('a text check lands among the checks only; a town with nobody left to reach is done', () => {
-  assert.deepEqual(openingAnswers({ 'check:ai': { noul: 0.99 }, 'interest:cars': { score: 4 } }), { scores: { 'interest:cars': 1 }, unlisted: [], blocked: [], checks: { ai: 0.99 } });
+  assert.deepEqual(openingAnswers({ 'check:concrete': { noul: 0.99 }, 'interest:cars': { score: 4 } }), { scores: { 'interest:cars': 1 }, unlisted: [], blocked: [], checks: { concrete: 0.99 } });
   const town = new Uint8Array(10).fill(1);
   assert.equal(anyoneLeft(town), false);
   town[4] = 0;

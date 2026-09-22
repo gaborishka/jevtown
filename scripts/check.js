@@ -98,7 +98,7 @@ if (result.followUp?.asked) {
 }
 
 // What the people asked at the end said, every answer offered, with the same rule for what leads as the post page.
-const HEADS = { scrolled: 'why they scrolled past', sorry: 'why they got annoyed', hook: 'what stopped the people who liked it', comment: 'what they would write in the comments', depth: 'how far they read' };
+const HEADS = { scrolled: 'why they scrolled past', sorry: 'why they got annoyed', hook: 'what stopped the people who liked it', comment: 'what they would write in the comments' };
 for (const list of LISTS) {
   if (result.said.missing[list]) {
     console.log(`\n${list}: Jev did not answer`);

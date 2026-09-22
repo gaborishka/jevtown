@@ -881,9 +881,9 @@ function postPage(view, post) {
     return words(view.lead.kind === 'one' ? labels[0] : t.and(labels));
   }
 
-  /** Jev's yes or no about the text itself, apart from the town. Whether the author wrote like an AI is for the author's eyes only. */
+  /** Jev's yes or no about the text itself, apart from the town. */
   function checksBlock() {
-    const rows = checksFor(post.preset).filter(([id]) => version.checks?.[id] != null && (id !== 'ai' || post.mine)).map(([id]) => {
+    const rows = checksFor(post.preset).filter(([id]) => version.checks?.[id] != null).map(([id]) => {
       const value = readCheck(version.checks[id]);
       const label = typeof t.checks.labels[id] === 'string' ? t.checks.labels[id] : t.checks.labels[id][post.preset];
       return { id, row: h('li', { class: value === 'unclear' ? 'unclear' : '' }, h('span', {}, label), h('b', {}, t.checks.values[value])) };
@@ -891,7 +891,6 @@ function postPage(view, post) {
     return rows.length > 0 && h('section', { class: 'text-checks', 'aria-label': t.checks.title },
       h('p', { class: 'eyebrow' }, t.checks.title),
       h('ul', { class: 'checks' }, rows.map((item) => item.row)),
-      rows.at(-1).id === 'ai' && h('p', { class: 'dim' }, t.checks.onlyYou),
       h('p', { class: 'hint' }, t.checks.note));
   }
 

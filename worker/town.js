@@ -8,7 +8,7 @@ import { askQuestion, mergeSaid, listsOf } from '../public/shared/check.js';
 import { ask } from '../public/shared/jev.js';
 
 /** The `batches` stage each question's answers are stored under, with n = 0. */
-export const ASK_STAGE = { why: 'y', hook: 'h', comment: 'c', depth: 'd' };
+export const ASK_STAGE = { why: 'y', hook: 'h', comment: 'c' };
 const QUESTION_OF = Object.fromEntries(Object.entries(ASK_STAGE).map(([question, stage]) => [stage, question]));
 /**
  * How long one close holds the asking. Longer than the slowest ask: three attempts of jev.js's 30 s

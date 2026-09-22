@@ -29,7 +29,6 @@ function fakeJev({ questions }) {
       const [first, second] = Object.keys(question.criteria);
       answers[id] = { probabilities: { [first]: 0.5, [second]: 0.3, cant_tell: 0.2 } };
     } else if (asks(question, 'comment')) answers[id] = { probabilities: { none: 0.6, question: 0.3, cant_tell: 0.1 } };
-    else if (asks(question, 'depth')) answers[id] = { probabilities: { to_end: 0.7, half: 0.2, cant_tell: 0.1 } };
     else {
       const first = Object.keys(question.criteria)[1];
       const glad = Object.keys(question.criteria)[2];
@@ -104,17 +103,16 @@ function reacting(reactionOf) {
   });
 }
 
-test('the town is asked in at most four requests of weight 100, in pick order', async () => {
+test('the town is asked in at most three requests of weight 100, in pick order', async () => {
   const { result, sent, asked } = await recorded({ presetId: 'post', text: LONG_POST });
   for (const question of Object.keys(ASKS)) assert.equal(asked(question).length, 1, question);
-  assert.equal(sent.length, 1 + asked('reactions').length + 4);
+  assert.equal(sent.length, 1 + asked('reactions').length + 3);
   // The reaction batches go out in the order the feed picked people.
   const picked = asked('reactions').flatMap((one) => one.ids);
   const first = (test) => picked.filter((id) => test(PRESETS.post.reactions[result.keys[result.reactions[id] - 1]])).slice(0, ASK_WEIGHT);
   assert.deepEqual(asked('why')[0].ids, first((reaction) => !reaction.stopped && !reaction.hollow));
   assert.deepEqual(asked('hook')[0].ids, first((reaction) => reaction.tone === 1));
   assert.deepEqual(asked('comment')[0].ids, first((reaction) => reaction.stopped));
-  assert.deepEqual(asked('depth')[0].ids, asked('comment')[0].ids);
   const view = listView(result.said, 'scrolled', 'post');
   assert.deepEqual(view.lead, { kind: 'one', ids: ['not_for_them'] });
   assert.ok(Math.abs(view.rows[0].share - 0.889) < 0.001, `not for them: ${view.rows[0].share}`);
@@ -131,12 +129,12 @@ test('the town is asked in at most four requests of weight 100, in pick order', 
   }
 });
 
-test('a short text is not asked about depth; product and headline ask only why and hook; a listing asks depth, not comment', async () => {
+test('a post asks why, hook and comment; the other presets ask only why and hook', async () => {
   const questions = async (presetId, text) => (await recorded({ presetId, text, prices: [5, 10] })).sent.map((one) => one.kind).filter((kind) => kind in ASKS).sort();
   assert.deepEqual(await questions('post', 'tomatoes'), ['comment', 'hook', 'why']);
   assert.deepEqual(await questions('product', LONG_POST), ['hook', 'why']);
   assert.deepEqual(await questions('headline', LONG_POST), ['hook', 'why']);
-  assert.deepEqual(await questions('listing', LONG_POST), ['depth', 'hook', 'why']);
+  assert.deepEqual(await questions('listing', LONG_POST), ['hook', 'why']);
 });
 
 test('the sorry are asked why apart, up to 40', async () => {
@@ -158,7 +156,7 @@ test('a failed question does not stop the check', async () => {
   const { result } = await recorded({ presetId: 'post', text: LONG_POST }, (request) => (kindOf(request) === 'hook' ? Promise.reject(new Error('boom')) : fakeJev(request)));
   const whole = await recorded({ presetId: 'post', text: LONG_POST });
   assert.deepEqual(result.said.missing, { hook: 'failed' });
-  assert.deepEqual(Object.keys(result.said.lists), ['scrolled', 'comment', 'depth']);
+  assert.deepEqual(Object.keys(result.said.lists), ['scrolled', 'comment']);
   assert.equal(result.failed, 1);
   assert.deepEqual(result.reactions, whole.result.reactions);
 });
@@ -170,12 +168,14 @@ test('the same text and version give the same answers from the town', async () =
   assert.ok(Object.keys(first.said.picks.hook).length > 0);
 });
 
-test('the text checks come back with the opening request; a headline is asked only two', async () => {
+test('the text checks come back with the opening request; the point first is asked of a listing, a headline only one', async () => {
   const { result } = await recorded({ presetId: 'post', text: 'tomatoes' });
-  assert.equal(result.checks.concrete, 0.9);
-  assert.equal(result.checks.ai, 0.1);
-  assert.deepEqual(Object.keys(openingRequest('headline', 'x').questions).filter((id) => id.startsWith('check:')), ['check:concrete', 'check:ai']);
-  assert.equal(openingAnswers({ 'check:ai': { noul: 0.987 } }).checks.ai, 0.99);
+  assert.deepEqual(result.checks, { ask: 0.1, concrete: 0.9 });
+  const checksOf = (presetId) => Object.keys(openingRequest(presetId, 'x').questions).filter((id) => id.startsWith('check:'));
+  assert.deepEqual(checksOf('headline'), ['check:concrete']);
+  assert.deepEqual(checksOf('listing'), ['check:point_first', 'check:ask', 'check:concrete']);
+  assert.deepEqual(checksOf('product'), ['check:ask', 'check:concrete']);
+  assert.equal(openingAnswers({ 'check:concrete': { noul: 0.987 } }).checks.concrete, 0.99);
 });
 
 test('an answer leads alone, a few lead about equally, or none stands out', () => {
@@ -208,7 +208,7 @@ test('a list is read over its real answers, the drain left out', () => {
 
 test('the stored answer ids stay', () => {
   assert.deepEqual(Object.keys(REASONS), ['not_for_them', 'weak_opening', 'unclear', 'too_long', 'nothing_new', 'distrust', 'tone', 'disagree', 'price', 'missing']);
-  assert.deepEqual(Object.keys(ASKS), ['why', 'hook', 'comment', 'depth']);
+  assert.deepEqual(Object.keys(ASKS), ['why', 'hook', 'comment']);
   assert.deepEqual(Object.fromEntries(Object.entries(ASKS.hook.answers).map(([presetId, answers]) => [presetId, Object.keys(answers)])), {
     post: ['example', 'story', 'useful', 'humour', 'opinion', 'opening', 'topic'],
     listing: ['price', 'details', 'trust', 'terms', 'need'],
@@ -216,7 +216,6 @@ test('the stored answer ids stay', () => {
     headline: ['curiosity', 'promise', 'detail', 'news', 'topic'],
   });
   assert.deepEqual(Object.keys(ASKS.comment.answers), ['adds_own', 'question', 'argues', 'thanks', 'joke', 'tags', 'none']);
-  assert.deepEqual(Object.keys(ASKS.depth.answers), ['first_sentence', 'half', 'to_end']);
   assert.ok(!('habit' in REASONS));
 });
 
