@@ -1,18 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runCheck } from '../public/shared/check.js';
-import { counters, segments, rankedAnswers, demandCurve } from '../public/shared/summary.js';
+import { counters, segments, rankedAnswers, demandCurve, leaders, listView, readCheck, whySplit, mostAnnoyed, voicesOf } from '../public/shared/summary.js';
 import { crowd } from '../public/shared/personas.js';
+import { PRESETS, REASONS, ASKS, lookOf } from '../public/shared/presets.js';
+import { openingRequest } from '../public/shared/requests.js';
+import { ASK_WEIGHT } from '../public/shared/feed.js';
+import { unit } from '../public/shared/rng.js';
 
 const people = crowd('uk');
 
-/** A stand-in for Jev: gardeners love the text, everybody else scrolls past; buyers ask about the price. */
+const asks = (question, id) => question.instructions.endsWith(ASKS[id].ask);
+
+/**
+ * A stand-in for Jev: gardeners love the text, everybody else scrolls past; buyers ask about the price.
+ * Those who scrolled past mostly find the text is not for them, and the annoyed blame the tone.
+ */
 function fakeJev({ questions }) {
   const answers = {};
   for (const [id, question] of Object.entries(questions)) {
     if (question.type === 'score') answers[id] = { score: id === 'interest:gardening' ? 4 : 0 };
     else if ('negotiable' in question.criteria) answers[id] = { probabilities: { negotiable: 0.6, photos: 0.4 } };
     else if ('p0' in question.criteria) answers[id] = { probabilities: { p1: 0.5, p2: 0.3, p3: 0.2 } };
+    else if (id.startsWith('check:')) answers[id] = { noul: id === 'check:concrete' ? 0.9 : 0.1 };
+    else if (asks(question, 'why')) answers[id] = { probabilities: question.instructions.includes('went past') ? { not_for_them: 0.8, weak_opening: 0.1, cant_tell: 0.1 } : { tone: 0.9, cant_tell: 0.1 } };
+    else if (asks(question, 'hook')) {
+      const [first, second] = Object.keys(question.criteria);
+      answers[id] = { probabilities: { [first]: 0.5, [second]: 0.3, cant_tell: 0.2 } };
+    } else if (asks(question, 'comment')) answers[id] = { probabilities: { none: 0.6, question: 0.3, cant_tell: 0.1 } };
+    else if (asks(question, 'depth')) answers[id] = { probabilities: { to_end: 0.7, half: 0.2, cant_tell: 0.1 } };
     else {
       const first = Object.keys(question.criteria)[1];
       const glad = Object.keys(question.criteria)[2];
@@ -57,4 +73,191 @@ test('those who stopped answer the follow-up question', async () => {
   const product = await runCheck({ send: fakeJev, presetId: 'product', pool: 'uk', text: 'seedlings', versionId: 'v1', maxWaves: 1, prices: [5, 10, 20] });
   const asked = product.followUp.asked;
   assert.deepEqual(demandCurve(product.followUp, [5, 10, 20]).map((step) => step.buyers), [asked, Math.round(asked * 0.5), Math.round(asked * 0.2)]);
+});
+
+const LONG_POST = 'Tomatoes need warm nights. '.repeat(8);
+
+/** What a request asks: the opening one, a closing question (presets.js:ASKS), or reactions and the follow-up. */
+function kindOf({ questions }) {
+  const first = Object.values(questions)[0];
+  if (first.type !== 'choice') return 'opening';
+  return Object.keys(ASKS).find((id) => asks(first, id)) ?? 'reactions';
+}
+
+/** A one-wave check that keeps every request it sent, with its kind and the ids of the people in it. */
+async function recorded(options, send = fakeJev) {
+  const sent = [];
+  const result = await runCheck({ versionId: 'v1', maxWaves: 1, pool: 'uk', ...options, send: (request) => {
+    sent.push({ kind: kindOf(request), ids: Object.keys(request.questions).map((id) => Number(id.slice(1))) });
+    return send(request);
+  } });
+  return { result, sent, asked: (kind) => sent.filter((one) => one.kind === kind) };
+}
+
+/** fakeJev with every reaction replaced by reactionOf(id, index), index counting the people in the order they were asked. */
+function reacting(reactionOf) {
+  let index = 0;
+  return (request) => fakeJev(request).then((result) => {
+    if (kindOf(request) === 'reactions') for (const id of Object.keys(request.questions)) result.answers[id] = { probabilities: { [reactionOf(Number(id.slice(1)), index++)]: 1 } };
+    return result;
+  });
+}
+
+test('the town is asked in at most four requests of weight 100, in pick order', async () => {
+  const { result, sent, asked } = await recorded({ presetId: 'post', text: LONG_POST });
+  for (const question of Object.keys(ASKS)) assert.equal(asked(question).length, 1, question);
+  assert.equal(sent.length, 1 + asked('reactions').length + 4);
+  // The reaction batches go out in the order the feed picked people.
+  const picked = asked('reactions').flatMap((one) => one.ids);
+  const first = (test) => picked.filter((id) => test(PRESETS.post.reactions[result.keys[result.reactions[id] - 1]])).slice(0, ASK_WEIGHT);
+  assert.deepEqual(asked('why')[0].ids, first((reaction) => !reaction.stopped && !reaction.hollow));
+  assert.deepEqual(asked('hook')[0].ids, first((reaction) => reaction.tone === 1));
+  assert.deepEqual(asked('comment')[0].ids, first((reaction) => reaction.stopped));
+  assert.deepEqual(asked('depth')[0].ids, asked('comment')[0].ids);
+  const view = listView(result.said, 'scrolled', 'post');
+  assert.deepEqual(view.lead, { kind: 'one', ids: ['not_for_them'] });
+  assert.ok(Math.abs(view.rows[0].share - 0.889) < 0.001, `not for them: ${view.rows[0].share}`);
+  assert.ok(Math.abs(view.drain - 0.1) < 1e-9, `drain: ${view.drain}`);
+});
+
+test('a short text is not asked about depth; product and headline ask only why and hook; a listing asks depth, not comment', async () => {
+  const questions = async (presetId, text) => (await recorded({ presetId, text, prices: [5, 10] })).sent.map((one) => one.kind).filter((kind) => kind in ASKS).sort();
+  assert.deepEqual(await questions('post', 'tomatoes'), ['comment', 'hook', 'why']);
+  assert.deepEqual(await questions('product', LONG_POST), ['hook', 'why']);
+  assert.deepEqual(await questions('headline', LONG_POST), ['hook', 'why']);
+  assert.deepEqual(await questions('listing', LONG_POST), ['depth', 'hook', 'why']);
+});
+
+test('the sorry are asked why apart, up to 40', async () => {
+  const { result } = await recorded({ presetId: 'post', text: 'tomatoes' }, reacting((id) => (id % 3 === 0 ? 'blocked' : 'scrolled_past')));
+  assert.equal(result.said.lists.sorry.asked, 40);
+  assert.equal(result.said.lists.scrolled.asked, 60);
+});
+
+test('nobody who passed, nobody asked why; a group under ten is not asked', async () => {
+  const glad = await recorded({ presetId: 'post', text: 'tomatoes' }, reacting(() => 'liked'));
+  assert.equal(glad.asked('why').length, 0);
+  assert.equal(glad.asked('hook').length, 1);
+  const few = await recorded({ presetId: 'post', text: 'tomatoes' }, reacting((id, index) => (index < 5 ? 'liked' : 'scrolled_past')));
+  assert.equal(few.asked('hook').length, 0);
+  assert.equal(few.asked('why').length, 1);
+});
+
+test('a failed question does not stop the check', async () => {
+  const { result } = await recorded({ presetId: 'post', text: LONG_POST }, (request) => (kindOf(request) === 'hook' ? Promise.reject(new Error('boom')) : fakeJev(request)));
+  const whole = await recorded({ presetId: 'post', text: LONG_POST });
+  assert.deepEqual(result.said.missing, { hook: 'failed' });
+  assert.deepEqual(Object.keys(result.said.lists), ['scrolled', 'comment', 'depth']);
+  assert.equal(result.failed, 1);
+  assert.deepEqual(result.reactions, whole.result.reactions);
+});
+
+test('the same text and version give the same answers from the town', async () => {
+  const run = () => runCheck({ send: fakeJev, presetId: 'post', pool: 'uk', text: LONG_POST, versionId: 'v1', maxWaves: 2 });
+  const [first, second] = [await run(), await run()];
+  assert.deepEqual(first.said, second.said);
+  assert.ok(Object.keys(first.said.picks.hook).length > 0);
+});
+
+test('the text checks come back with the opening request; a headline is asked only two', async () => {
+  const { result } = await recorded({ presetId: 'post', text: 'tomatoes' });
+  assert.equal(result.checks.concrete, 0.9);
+  assert.equal(result.checks.ai, 0.1);
+  assert.deepEqual(Object.keys(openingRequest('headline', 'x').questions).filter((id) => id.startsWith('check:')), ['check:concrete', 'check:ai']);
+});
+
+test('an answer leads alone, a few lead about equally, or none stands out', () => {
+  const rows = (...shares) => shares.map((share, i) => ({ id: `a${i}`, share }));
+  assert.deepEqual(leaders(rows(0.5, 0.2, 0.2, 0.1), 100), { kind: 'one', ids: ['a0'] });
+  // Within 0.161 of the leader and not within 0.145: the first two only.
+  assert.deepEqual(leaders(rows(0.35, 0.3, 0.2, 0.15), 100), { kind: 'equal', ids: ['a0', 'a1'] });
+  assert.deepEqual(leaders(rows(0.26, 0.25, 0.25, 0.24), 100), { kind: 'none', ids: [] });
+});
+
+test('a list is read over its real answers, the drain left out', () => {
+  // Twenty real answers of a hundred asked: apart by a hundred, about equal by twenty.
+  const said = { lists: { hook: { asked: 100, totals: { example: 13.33, story: 6.67, invented: 5, cant_tell: 80 } } } };
+  const view = listView(said, 'hook', 'post');
+  assert.equal(view.asked, 100);
+  assert.ok(Math.abs(view.real - 20) < 1e-9 && Math.abs(view.drain - 0.8) < 1e-9);
+  assert.deepEqual(view.rows.map((row) => row.id), ['example', 'story', 'useful', 'humour', 'opinion', 'opening', 'topic']);
+  assert.ok(Math.abs(view.rows[0].share - 0.6665) < 1e-9);
+  assert.deepEqual(view.lead, { kind: 'equal', ids: ['example', 'story'] });
+  assert.equal(leaders(view.rows, 100).kind, 'one');
+  assert.equal(listView({ lists: { hook: { asked: 30, totals: { example: 9.5, cant_tell: 20.5 } } } }, 'hook', 'post'), null);
+  assert.equal(listView({ lists: {} }, 'hook', 'post'), null);
+
+  assert.deepEqual([0.3, 0.5, 0.7].map(readCheck), ['no', 'unclear', 'yes']);
+  const scrolled = listView({ lists: { scrolled: { asked: 50, totals: { not_for_them: 30, weak_opening: 15, too_long: 5 } } } }, 'scrolled', 'post');
+  const split = whySplit(scrolled);
+  assert.ok(Math.abs(split.readers - 0.6) < 1e-9 && Math.abs(split.text - 0.4) < 1e-9, JSON.stringify(split));
+});
+
+test('the stored answer ids stay', () => {
+  assert.deepEqual(Object.keys(REASONS), ['not_for_them', 'weak_opening', 'unclear', 'too_long', 'nothing_new', 'distrust', 'tone', 'disagree', 'price', 'missing']);
+  assert.deepEqual(Object.keys(ASKS), ['why', 'hook', 'comment', 'depth']);
+  assert.deepEqual(Object.fromEntries(Object.entries(ASKS.hook.answers).map(([presetId, answers]) => [presetId, Object.keys(answers)])), {
+    post: ['example', 'story', 'useful', 'humour', 'opinion', 'opening', 'topic'],
+    listing: ['price', 'details', 'trust', 'terms', 'need'],
+    product: ['price', 'benefit', 'claims', 'guarantee', 'details', 'need'],
+    headline: ['curiosity', 'promise', 'detail', 'news', 'topic'],
+  });
+  assert.deepEqual(Object.keys(ASKS.comment.answers), ['adds_own', 'question', 'argues', 'thanks', 'joke', 'tags', 'none']);
+  assert.deepEqual(Object.keys(ASKS.depth.answers), ['first_sentence', 'half', 'to_end']);
+  assert.ok(!('habit' in REASONS));
+});
+
+test('the group most often annoyed is counted over those it reached', () => {
+  const totals = { reach: 1000, sorry: 100 };
+  const group = (attribute, value, size, reached, sorry) => ({ attribute, value, size, reached, sorry });
+  // The smaller group was reached less and annoyed more of those it reached.
+  const small = group('interest', 'cooking', 400, 50, 20);
+  const big = group('field', 'it', 600, 300, 60);
+  assert.equal(mostAnnoyed([big, small], totals), small);
+  assert.equal(mostAnnoyed([big, small, group('temper', 'troll', 300, 100, 90), group('city', 'Lviv', 300, 100, 80)], totals), small);
+  assert.equal(mostAnnoyed([group('interest', 'cooking', 400, 39, 30)], totals), null);
+});
+
+/** voicesOf as it was before the town was asked anything, to hold the new one to it. */
+function voicesBefore(postId, presetId, reactions, only = null) {
+  const keys = Object.keys(PRESETS[presetId].reactions);
+  const turn = ['spreads', 'sorry', 'glad', 'stopped'];
+  const keep = only ? 400 : 60;
+  const byReaction = new Map();
+  for (let id = 0; id < reactions.length; id++) {
+    if (!reactions[id]) continue;
+    const reaction = keys[reactions[id] - 1];
+    const look = lookOf(presetId, reaction);
+    if (only ? reaction !== only : !turn.includes(look)) continue;
+    let group = byReaction.get(reaction);
+    if (!group) byReaction.set(reaction, (group = { look, total: 0, people: [] }));
+    group.total += 1;
+    group.people.push({ id, reaction, look, order: unit('voice', postId, id) });
+    if (group.people.length > keep * 2) group.people = group.people.sort((a, b) => a.order - b.order).slice(0, keep);
+  }
+  const groups = [...byReaction.values()].sort((a, b) => turn.indexOf(a.look) - turn.indexOf(b.look));
+  for (const group of groups) group.people = group.people.sort((a, b) => a.order - b.order).slice(0, keep);
+  const found = [];
+  for (let round = 0; found.length < groups.reduce((sum, group) => sum + group.people.length, 0); round++) {
+    for (const group of groups) found.push(...group.people.slice(round * 2, round * 2 + 2));
+  }
+  found.total = groups.reduce((sum, group) => sum + group.total, 0);
+  return found;
+}
+
+test('voices stay as they were without answers; with them, those who answered speak first', () => {
+  const reactions = Uint8Array.from({ length: 60 }, (_, id) => (id % 10 === 9 ? 0 : 1 + (id % 8)));
+  for (const only of [null, 'liked', 'scrolled_past']) {
+    const now = voicesOf('p1', 'post', reactions, only);
+    assert.deepEqual(now, voicesBefore('p1', 'post', reactions, only));
+    assert.equal(now.total, voicesBefore('p1', 'post', reactions, only).total);
+  }
+  const saidOf = (id) => (id % 4 === 0 ? 'example' : null);
+  const voices = voicesOf('p1', 'post', reactions, null, saidOf);
+  const scrollers = voices.filter((voice) => voice.look === 'scrolled');
+  assert.ok(scrollers.length && scrollers.every((voice) => saidOf(voice.id)));
+  for (const reaction of new Set(voices.map((voice) => voice.reaction))) {
+    const answered = voices.filter((voice) => voice.reaction === reaction).map((voice) => Boolean(saidOf(voice.id)));
+    assert.deepEqual(answered, [...answered].sort((a, b) => b - a), `${reaction}: those who answered come first`);
+  }
 });

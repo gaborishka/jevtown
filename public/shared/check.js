@@ -1,12 +1,12 @@
 // One check from start to finish: Jev says whom the text is for, the text goes out in waves while
-// people are glad to see it, and those who stopped answer the preset's follow-up question.
-// The caller supplies the way to Jev, so the same code runs in the terminal, in tests and, cut into
-// pieces, in the Worker.
+// people are glad to see it, those who stopped answer the preset's follow-up question, and then up
+// to four questions go to up to 100 of the people it reached. The caller supplies the way to Jev, so
+// the same code runs in the terminal, in tests and, cut into pieces, in the Worker.
 import { crowd } from './personas.js';
-import { PRESETS, priceLadder, NOT_SHOWN } from './presets.js';
-import { reactionRequest, followUpRequest, exposureRequest, exposureScores, questionId } from './requests.js';
-import { firstWave, nextWave, mood, travels, WAVES } from './feed.js';
-import { drawReaction } from './draw.js';
+import { PRESETS, priceLadder, lookOf, listOf, answersFor, LISTS, NOT_SHOWN, CANT_TELL } from './presets.js';
+import { reactionRequest, followUpRequest, askRequest, openingRequest, openingAnswers, questionId } from './requests.js';
+import { firstWave, nextWave, mood, travels, gatherAsked, asking, emptyGathered, WAVES } from './feed.js';
+import { drawReaction, drawAnswer } from './draw.js';
 import { eachLimit } from './jev.js';
 import { rng, hash32 } from './rng.js';
 
@@ -15,9 +15,60 @@ export const AT_ONCE = 8;
 export { NOT_SHOWN };
 
 const chunk = (items, size) => Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size));
+const round2 = (value) => Math.round(value * 100) / 100;
 
 /**
- * runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves, onWave }) → the finished check.
+ * One closing question (presets.js:ASKS) asked of `people` in one request, the answers tallied by
+ * list: `asked` counts the people Jev answered for, `totals` sums their probabilities, the drain
+ * included. Every person's own answer is drawn for the map and the voices and kept only when it is a
+ * real one. reactionOf(id) is what each of them did.
+ * → { part: { lists: { [list]: { asked, totals } }, picks: { [list]: { [answer]: [personId, …] } } }, usd, tokens }
+ */
+export async function askQuestion(send, question, { presetId, text, people, reactionOf, pool, versionId }) {
+  const { answers, usd, tokens } = await send(askRequest(question, presetId, text, people, reactionOf));
+  const lists = {};
+  const picks = {};
+  for (const who of people) {
+    const look = lookOf(presetId, reactionOf(who.id));
+    const offered = answersFor(question, presetId, look);
+    const probabilities = Object.fromEntries(Object.entries(answers[questionId(who)]?.probabilities ?? {}).filter(([id]) => id in offered));
+    if (!Object.keys(probabilities).length) continue;
+    const list = listOf(question, look);
+    const tally = (lists[list] ??= { asked: 0, totals: {} });
+    tally.asked += 1;
+    for (const [id, value] of Object.entries(probabilities)) tally.totals[id] = (tally.totals[id] ?? 0) + value;
+    const pick = drawAnswer(probabilities, pool, who.id, versionId, question);
+    if (pick !== CANT_TELL) ((picks[list] ??= {})[pick] ??= []).push(who.id);
+  }
+  for (const tally of Object.values(lists)) for (const id of Object.keys(tally.totals)) tally.totals[id] = round2(tally.totals[id]);
+  return { part: { lists, picks }, usd, tokens };
+}
+
+/** The lists a closing question fills with the answers of `ids`: why fills one for each look among them. */
+export const listsOf = (question, presetId, ids, reactionOf) => [...new Set(ids.map((id) => listOf(question, lookOf(presetId, reactionOf(id)))))];
+
+/**
+ * The answered parts of the closing questions as one, in the order of LISTS. `missing` names the lists
+ * a question would have filled: 'failed' when it was asked and not answered, 'budget' when the day's
+ * money was spent before it. → { lists, picks, missing }
+ */
+export function mergeSaid(parts, missing = {}) {
+  const said = { lists: {}, picks: {}, missing: {} };
+  for (const list of LISTS) {
+    const part = parts.find((candidate) => candidate.lists[list]);
+    if (part) {
+      said.lists[list] = part.lists[list];
+      said.picks[list] = part.picks[list] ?? {};
+    }
+    if (missing[list]) said.missing[list] = missing[list];
+  }
+  return said;
+}
+
+/**
+ * runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves, onWave }) → the finished check,
+ * with `said` (what the people asked at the end answered, as mergeSaid gives it) and `checks`, `unlisted`
+ * and `blocked` from the opening request, reported and not acted upon.
  * send(request) → { answers, tokens, usd } is `ask` bound to a provider. onWave(wave, reactions) is called
  * after every wave, for whoever draws the grid.
  */
@@ -45,12 +96,15 @@ export async function runCheck({ send, presetId, pool, text, versionId, prices, 
     spent.failed += 1;
   });
 
-  const scores = exposureScores((await paid(exposureRequest(presetId, text))).answers);
+  const opening = openingAnswers((await paid(openingRequest(presetId, text))).answers);
+  const { scores } = opening;
 
   const reactions = new Uint8Array(people.length);
   const reached = new Map();
+  const reactionOf = (id) => reached.get(id);
   const waves = [];
   const random = rng(hash32('waves', pool, versionId));
+  let gathered = emptyGathered();
   let wave = firstWave(people, scores, presetId, random);
   for (let index = 0; index < maxWaves && wave.length; index++) {
     const waveStartedAt = performance.now();
@@ -63,6 +117,7 @@ export async function runCheck({ send, presetId, pool, text, versionId, prices, 
     });
     const finished = { index, size: drawn.length, mood: mood(presetId, drawn), travels: travels(presetId, drawn), seconds: (performance.now() - waveStartedAt) / 1000 };
     waves.push(finished);
+    gathered = gatherAsked(presetId, wave.map((persona) => persona.id), reactionOf, gathered);
     onWave?.(finished, reactions);
     if (!finished.travels) break;
     wave = nextWave(people, reached, scores, presetId, index + 1, random);
@@ -81,5 +136,16 @@ export async function runCheck({ send, presetId, pool, text, versionId, prices, 
     followUp = { answers, asked, totals };
   }
 
-  return { presetId, pool, keys, scores, reactions, waves, reach: reached.size, followUp, ...spent, seconds: (performance.now() - startedAt) / 1000 };
+  const parts = [];
+  const missing = {};
+  await Promise.all(asking(presetId, text, gathered).map(({ question, ids }) => askQuestion(paid, question, { presetId, text, people: ids.map((id) => people[id]), reactionOf, pool, versionId })
+    .then(({ part }) => parts.push(part), (error) => {
+      if (error.fatal || error.code === 'no_key') throw error;
+      spent.failed += 1;
+      for (const list of listsOf(question, presetId, ids, reactionOf)) missing[list] = 'failed';
+    })));
+  const said = mergeSaid(parts, missing);
+
+  const { checks, unlisted, blocked } = opening;
+  return { presetId, pool, keys, scores, reactions, waves, reach: reached.size, followUp, said, checks, unlisted, blocked, ...spent, seconds: (performance.now() - startedAt) / 1000 };
 }

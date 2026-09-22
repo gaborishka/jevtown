@@ -3,7 +3,7 @@
 // reacted, and the grid neighbours of those who spread it. Every post is on its own: the town keeps
 // no memory of who wrote what.
 import { GRID } from './personas.js';
-import { PRESETS } from './presets.js';
+import { PRESETS, asksFor } from './presets.js';
 
 // The sizes, the rule and the weights below come from docs/measurements.md.
 export const WAVES = [
@@ -145,3 +145,95 @@ export function mood(presetId, waveReactions) {
 
 /** Does a finished wave send the text further? */
 export const travels = (presetId, waveReactions) => mood(presetId, waveReactions) >= GLAD_ENOUGH;
+
+/**
+ * Whether somebody in town has not seen the text yet: a byte of `reactions` still at 0. `inTown`
+ * limits the town to the people whose byte in it is 1.
+ */
+export function anyoneLeft(reactions, inTown = null) {
+  for (let id = 0; id < reactions.length; id++) if (!reactions[id] && (!inTown || inTown[id])) return true;
+  return false;
+}
+
+// -- who is asked the closing questions (presets.js:ASKS)
+
+/** Every question is one request of about 100 personas; a resident counts as four (resident.js:RESIDENT_WEIGHT). */
+export const ASK_WEIGHT = 100;
+/**
+ * Why is asked of those who got annoyed up to this weight first. In the order the feed picked people
+ * they would be few: first waves give sorry reactions 0.00 to 0.01 on five of six strong texts and
+ * 0.07 to 0.44 on weak ones (docs/measurements.md §6), so a mixed sample of spam would be mostly scrollers.
+ */
+export const SORRY_WHY = 40;
+/** A question is asked only when this many people fit: fewer would pay for a list the page does not show. */
+export const MIN_ASKED = 10;
+
+/** The people a check keeps for its closing questions, by what they did: none yet. */
+export const emptyGathered = () => ({ scrolled: [], sorry: [], glad: [], stopped: [] });
+
+/**
+ * Adds the people of a wave to those kept for the closing questions, in the order the feed picked
+ * them: the best-ranked first and the random ones last, so the first wave's people come first and,
+ * among them, those Jev thought the text was for. scrolled is who scrolled past, sorry who got
+ * annoyed, glad who was glad (spreading included), stopped everybody who stopped. Nobody Jev did not
+ * answer for, and nobody it could not tell about, is kept. Each group stops at ASK_WEIGHT; a person
+ * too heavy for the room left is skipped while lighter people after them still fit.
+ * reactionOf(id) → reaction id, or undefined. → a new { scrolled, sorry, glad, stopped }
+ */
+export function gatherAsked(presetId, picked, reactionOf, gathered = emptyGathered(), weightOf = () => 1) {
+  const preset = PRESETS[presetId];
+  const next = {};
+  const room = {};
+  for (const group of Object.keys(emptyGathered())) {
+    next[group] = [...(gathered[group] ?? [])];
+    room[group] = ASK_WEIGHT - next[group].reduce((sum, id) => sum + weightOf(id), 0);
+  }
+  const add = (group, id, weight) => {
+    if (weight > room[group]) return;
+    next[group].push(id);
+    room[group] -= weight;
+  };
+  for (const id of picked) {
+    const reaction = preset.reactions[reactionOf(id)];
+    if (!reaction || reaction.hollow) continue;
+    const weight = weightOf(id);
+    if (!reaction.stopped) add('scrolled', id, weight);
+    if (reaction.tone === -1) add('sorry', id, weight);
+    if (reaction.tone === 1) add('glad', id, weight);
+    if (reaction.stopped) add('stopped', id, weight);
+  }
+  return next;
+}
+
+/** The ids, in order, that fit under the weight `limit` together with those already `taken`. */
+function upTo(ids, limit, taken, weightOf) {
+  let weight = taken.reduce((sum, id) => sum + weightOf(id), 0);
+  const chosen = [];
+  for (const id of ids) {
+    if (weight + weightOf(id) > limit) continue;
+    chosen.push(id);
+    weight += weightOf(id);
+  }
+  return chosen;
+}
+
+/**
+ * Who a question goes to. Why: those who got annoyed up to SORRY_WHY, then those who scrolled past,
+ * then more of the annoyed if there is room. What made them stop: the glad. What they would comment
+ * and how far they read: the same people, everybody who stopped.
+ */
+export function whoIsAsked(question, gathered, weightOf = () => 1) {
+  if (question === 'hook') return gathered.glad;
+  if (question !== 'why') return gathered.stopped;
+  const sorry = upTo(gathered.sorry, SORRY_WHY, [], weightOf);
+  const scrolled = upTo(gathered.scrolled, ASK_WEIGHT, sorry, weightOf);
+  const more = upTo(gathered.sorry.filter((id) => !sorry.includes(id)), ASK_WEIGHT, [...sorry, ...scrolled], weightOf);
+  return [...sorry, ...scrolled, ...more];
+}
+
+/** The closing questions of a text and who each goes to; a question with fewer than MIN_ASKED people is left out. → [{ question, ids }] */
+export function asking(presetId, text, gathered, weightOf = () => 1) {
+  return asksFor(presetId, text)
+    .map((question) => ({ question, ids: whoIsAsked(question, gathered, weightOf) }))
+    .filter((asked) => asked.ids.length >= MIN_ASKED);
+}

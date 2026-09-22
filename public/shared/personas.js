@@ -28,8 +28,12 @@ function interestsAround(pool, id, x, y) {
   })).sort((a, b) => a.distance - b.distance);
 }
 
-/** persona(pool, id) → the same person every time. pool is 'uk' or 'en', id is 0..9999. */
-export function persona(pool, id) {
+/**
+ * persona(pool, id) → the same person every time. pool is 'uk' or 'en', id is 0..9999.
+ * `interests` are the packed ones of the same id (pack.js:interestsAt); the person is the same, only
+ * they are not drawn again, which is most of the cost.
+ */
+export function persona(pool, id, interests = null) {
   const names = POOLS[pool];
   if (!names) throw new Error(`unknown pool: ${pool}`);
   const u = (salt) => unit(pool, id, salt);
@@ -39,10 +43,12 @@ export function persona(pool, id) {
   const age = Math.round(Math.min(80, Math.max(18, 18 + (y / (GRID - 1)) * 48 + (u('age') - 0.5) * 14)));
   const ageGroup = AGE_GROUPS.findLast((group) => age >= group.from).id;
 
-  const around = interestsAround(pool, id, x, y);
-  const interests = [around[0].id];
-  interests.push(u('second') < 0.5 ? around[1].id : pickOther(interests, u('second-any')));
-  interests.push(pickOther(interests, u('third')));
+  if (!interests) {
+    const around = interestsAround(pool, id, x, y);
+    interests = [around[0].id];
+    interests.push(u('second') < 0.5 ? around[1].id : pickOther(interests, u('second-any')));
+    interests.push(pickOther(interests, u('third')));
+  }
 
   const job = pickJob(age, INTEREST[interests[0]].field, u);
   const field = JOB[job].field;
