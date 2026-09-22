@@ -1,13 +1,16 @@
 // A full check in the terminal:
 //   node --env-file=.env.local scripts/check.js --preset listing "iPhone 13, 128 GB, ..."
+// Every wave, the follow-up, what the town was asked at the end and Jev's reading of the text.
 //   options: --preset post|listing|product|headline   --pool uk|en   --prices 9,15,24,39   --currency $   --waves 2
 import { crowd, GRID } from '../public/shared/personas.js';
-import { PRESETS } from '../public/shared/presets.js';
+import { PRESETS, LISTS, answersFor, questionOfList } from '../public/shared/presets.js';
+import { checksFor } from '../public/shared/requests.js';
 import { pickProvider, ask } from '../public/shared/jev.js';
 import { runCheck, NOT_SHOWN } from '../public/shared/check.js';
-import { counters, segments, topSegments, rankedAnswers, demandCurve } from '../public/shared/summary.js';
+import { counters, segments, topSegments, mostAnnoyed, rankedAnswers, demandCurve, listView, whySplit, readCheck, DRAIN_NOTE_FROM } from '../public/shared/summary.js';
 import { hash32 } from '../public/shared/rng.js';
 import { INTEREST, FIELDS, AGE_GROUP, TEMPER, BUDGET, SHOP } from '../public/shared/vocab.js';
+import { DICTIONARIES } from '../public/i18n.js';
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => {
@@ -69,6 +72,13 @@ const name = (segment) => LABELS[segment.attribute](segment.value);
 const percent = (share) => `${Math.round(share * 100)}%`;
 
 console.log('\nshown to: ' + Object.entries(scores).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([id, score]) => `${LABELS[id.split(':')[0]](id.split(':')[1])} ${score.toFixed(2)}`).join(', '));
+const en = DICTIONARIES.en;
+console.log("text checks (Jev's reading of the text, not the town's reactions):");
+for (const [id] of checksFor(presetId)) {
+  if (result.checks[id] == null) continue;
+  const label = typeof en.checks.labels[id] === 'string' ? en.checks.labels[id] : en.checks.labels[id][presetId];
+  console.log(`  ${readCheck(result.checks[id]).padEnd(7)} ${result.checks[id].toFixed(2)}  ${label}`);
+}
 const all = segments(presetId, keys, reactions, crowd(pool));
 const line = (what) => topSegments(all, what).map((s) => `${name(s)} ${percent(s[what] / s.size)}`).join(', ') + ` (everybody: ${percent(totals[what] / reactions.length)})`;
 console.log(`who stopped: ${line('stopped')}`);
@@ -86,4 +96,26 @@ if (result.followUp?.asked) {
     for (const answer of rankedAnswers(result.followUp).slice(0, 6)) console.log(`  ${percent(answer.share).padStart(4)}  ${answer.text}`);
   }
 }
+
+// What the people asked at the end said, every answer offered, with the same rule for what leads as the post page.
+const HEADS = { scrolled: 'why they scrolled past', sorry: 'why they got annoyed', hook: 'what stopped the people who liked it', comment: 'what they would write in the comments', depth: 'how far they read' };
+for (const list of LISTS) {
+  if (result.said.missing[list]) {
+    console.log(`\n${list}: Jev did not answer`);
+    continue;
+  }
+  const view = listView(result.said, list, presetId);
+  if (!view) continue;
+  const question = questionOfList(list);
+  const offered = answersFor(question, presetId, list);
+  const words = (ids) => ids.map((id) => en.said.labels[question][id]);
+  console.log(`\n${HEADS[list]}, ${view.asked} asked:`);
+  for (const row of view.rows) console.log(`  ${percent(row.share).padStart(4)}  ${offered[row.id]}`);
+  console.log(view.lead.kind === 'one' ? `  leads: ${words(view.lead.ids)[0]}` : view.lead.kind === 'equal' ? `  about equal: ${words(view.lead.ids).join('; ')}` : '  no single answer stands out');
+  if (view.drain >= DRAIN_NOTE_FROM) console.log(`  nothing about the person hinted at an answer: ${percent(view.drain)}`);
+  const split = list === 'scrolled' && whySplit(view);
+  if (split) console.log(`  about the text ${percent(split.text)}, about who was reading ${percent(split.readers)}`);
+}
+const annoyed = mostAnnoyed(all, totals);
+if (annoyed) console.log(`\nmost often annoyed: ${name(annoyed)}, ${annoyed.sorry} of the ${annoyed.reached} who saw it`);
 console.log(`\n${result.requests} requests, ${result.tokens.toLocaleString('en')} tokens, $${result.usd.toFixed(4)}, ${result.seconds.toFixed(1)} s${result.failed ? `, ${result.failed} batches failed` : ''}`);

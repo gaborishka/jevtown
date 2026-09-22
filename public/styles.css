@@ -1943,6 +1943,12 @@ button:disabled {
   color: var(--green);
 }
 
+/* The answers that lead what the town said: the one given most often, or the few about equal at the top. */
+.bars li.lead .bar-label {
+  color: var(--text);
+  font-weight: 750;
+}
+
 /* -- the map column: how far the text went, the crowd, the counters */
 
 .map-col {
@@ -2106,6 +2112,29 @@ button:disabled {
 
 .verdict h2 {
   font: 750 19px / 1.25 var(--display);
+}
+
+/* Jev's reading of the text itself, apart from the town. No colours: a "yes" is not good news for every question. */
+.text-checks {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.checks {
+  display: grid;
+  gap: 4px;
+}
+
+.checks li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 14px;
+}
+
+.checks .unclear {
+  color: var(--faint);
 }
 
 .compare {

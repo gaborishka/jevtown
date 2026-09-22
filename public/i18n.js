@@ -13,6 +13,7 @@ const uk = {
   langName: 'Українська',
   brand: 'Jevtown',
   n: number('uk'),
+  and: (items) => (items.length > 1 ? `${items.slice(0, -1).join(', ')} і ${items.at(-1)}` : items[0]),
   title: 'Соцмережа, де пишуть люди, а читають 10 000 ШІ-персон',
   lead: 'Напишіть пост, оголошення, товар чи заголовок. За кілька секунд місто відреагує: більшість проскролить, хтось лайкне, зарепостить, заблокує, напише продавцю або купить.',
   headLine: (post) => `У місті побачили ${number('uk')(post.reach)} · зупинилися ${number('uk')(post.stopped)} · раді ${number('uk')(post.glad)} · незадоволені ${number('uk')(post.sorry)}. Кожну реакцію дала модель Jev.`,
@@ -32,6 +33,12 @@ const uk = {
     reached: (reach, people) => `Текст побачили ${number('uk')(reach)} із ${number('uk')(people)} ${plural(people, ['мешканця', 'мешканців', 'мешканців'])}.`,
     balance: (glad, sorry) => `Раді: ${number('uk')(glad)}. Незадоволені: ${number('uk')(sorry)}.`,
     why: 'Текст іде далі, коли радих у хвилі більше, ніж незадоволених, щонайменше на 10% хвилі.',
+    // What the town said when asked (shared/presets.js:ASKS): the answer given most often, the two or three about equal at the top, or none.
+    asked: {
+      passed: { one: (answer) => `Найчастіша причина проскролити: ${answer}.`, equal: (list) => `Ті, хто проскролив, приблизно однаково часто називали: ${list}.`, none: 'Серед тих, хто проскролив, жодна причина не виділяється.' },
+      annoyed: { one: (answer) => `Найчастіша причина роздратування: ${answer}.`, equal: (list) => `Ті, кого роздратувало, приблизно однаково часто називали: ${list}.`, none: 'Серед тих, кого роздратувало, жодна причина не виділяється.' },
+      hook: { one: (answer) => `Що найчастіше зупиняло тих, кому сподобалось: ${answer}.`, equal: (list) => `Що зупиняло тих, кому сподобалось, приблизно однаково часто: ${list}.`, none: 'Серед того, що зупиняло тих, кому сподобалось, нічого не виділяється.' },
+    },
   },
   compare: { title: 'Порівняти тексти версій', previous: 'Попередня версія', current: 'Ця версія' },
   presets: {
@@ -64,7 +71,7 @@ const uk = {
     return new Date(Date.now() - ms).toLocaleDateString('uk', { day: 'numeric', month: 'short' });
   },
   rail: { title: 'Місто', size: residentsUk, waiting: 'Чекають на ваш текст', waitingNote: 'Ніхто в місті ще нічого не бачив. Спершу текст побачать 600 людей, яким він найближчий.', voices: 'Голоси міста' },
-  voices: { title: 'Голоси міста', note: 'Випадкові люди з тих, хто відреагував. Натисніть на людину, щоб відкрити її сторінку.', more: 'Показати ще', count: (shown, all) => `${number('uk')(shown)} з ${number('uk')(all)}`, nobody: 'Тут поки нікого.', wouldAsk: ['спитали б', 'спитав би', 'спитала б'], details: 'питає про деталь, якої немає в тексті', nothing: 'бере без питань' },
+  voices: { title: 'Голоси міста', note: 'Випадкові люди з тих, хто відреагував. Натисніть на людину, щоб відкрити її сторінку.', noteSaid: 'Випадкові люди з тих, хто відреагував, і кілька тих, хто проскролив, із відповіддю, яку Jev дав за кожного. Натисніть на людину, щоб відкрити її сторінку.', more: 'Показати ще', count: (shown, all) => `${number('uk')(shown)} з ${number('uk')(all)}`, nobody: 'Тут поки нікого.', wouldAsk: ['спитали б', 'спитав би', 'спитала б'], details: 'питає про деталь, якої немає в тексті', nothing: 'бере без питань' },
   ladder: { none: 'не купить за жодну з цих цін', upTo: (cost) => `купить лише за ${cost} або дешевше`, at: (cost) => `купить за ${cost}, не дорожче`, even: (cost) => `купить навіть за ${cost}` },
   post: { back: 'Стрічка', replay: 'Показати ще раз', everyone: 'усі', asking: { listing: 'питання', product: 'ціни' }, filter: 'Натисніть на реакцію, щоб побачити цих людей на карті', picture: (totals) => `Карта міста, точка на кожного мешканця. Побачили ${number('uk')(totals.reach)}, зупинилися ${number('uk')(totals.stopped)}, раді ${number('uk')(totals.glad)}, незадоволені ${number('uk')(totals.sorry)}.` },
   crowd: {
@@ -88,6 +95,7 @@ const uk = {
     wave: (index, total) => `Хвиля ${index + 1} · разом ${number('uk')(total)} ${plural(total, ['людина', 'людини', 'людей'])}`,
     went: 'пішло далі', stayed: 'зупинилось', moodNote: (mood) => `Настрій хвилі ${mood}: частка радих мінус частка незадоволених. Далі текст іде від +0.10.`,
     followup: (people) => `Розпитуємо тих, хто зупинився: ${number('uk')(people)}`,
+    asking: 'Ставимо кільком із тих, хто побачив, ще кілька питань…',
     travels: 'місту зайшло, іде далі', stops: 'далі не пішло',
     watching: 'Місто саме читає цей текст…', failed: 'Сталася помилка, місто не дочитало. Оновіть сторінку, щоб продовжити.', stale: 'Місто не дочитало цей текст. Нижче реакції тих, хто встиг.',
     done: (waves, seconds, usd) => `${waves} ${plural(waves, ['хвиля', 'хвилі', 'хвиль'])} · ${seconds.toFixed(0)} с · $${usd.toFixed(3)}`,
@@ -106,6 +114,46 @@ const uk = {
     versionDelta: 'проти попередньої версії',
     unlisted: 'Цей текст не потрапив у спільну стрічку, сторінка доступна лише за посиланням.',
     hiddenByAuthor: 'Автор не показує це у спільній стрічці.',
+    annoyedGroup: (group, sorry, reached) => `Найчастіше роздратувалися в групі «${group}»: ${number('uk')(sorry)} з ${number('uk')(reached)} тих, хто побачив.`,
+  },
+  said: {
+    tabs: { scrolled: 'Чому пройшли повз', sorry: 'Чому роздратувало', hook: 'Що зупинило', comment: 'Коментували б', depth: 'Як далеко читали' },
+    titles: { scrolled: 'Чому проскролили', sorry: 'Чому роздратувалися', hook: 'Що зупинило тих, кому сподобалось', comment: 'Що написали б у коментарях', depth: 'Як далеко читали' },
+    // Each is followed by `order`.
+    notes: {
+      scrolled: (asked) => `Спитали ${number('uk')(asked)} з тих, хто проскролив`, sorry: (asked) => `Спитали ${number('uk')(asked)} з тих, кого роздратувало`, hook: (asked) => `Спитали ${number('uk')(asked)} з тих, кому сподобалось`,
+      comment: (asked) => `Спитали ${number('uk')(asked)} з тих, хто зупинився`, depth: (asked) => `Спитали ${number('uk')(asked)} з тих, хто зупинився`,
+    },
+    order: ', у порядку, в якому стрічка показувала їм текст, тож здебільшого тих, для кого цей текст.',
+    commentNote: '«Не коментує» теж відповідь, а частки порахано серед тих, про кого Jev щось зміг сказати.',
+    point: 'Наведіть на відповідь, щоб побачити цих людей на карті.',
+    lead: 'Виділено відповідь, яку давали найчастіше, або дві чи три майже рівні нагорі.',
+    flat: 'Жодна відповідь не виділяється: нагорі більше трьох майже рівних.',
+    drain: (share) => `Для ${share} опитаних ніщо в людині не підказувало відповіді. На смугах їх немає.`,
+    split: (text, readers) => `${text} цих відповідей про сам текст, ${readers} про те, хто читав.`,
+    labels: {
+      why: { not_for_them: 'не цікаво й не потрібно', weak_opening: 'початок не чіпляє', unclear: 'незрозуміло, що це', too_long: 'задовго читати', nothing_new: 'нічого нового', distrust: 'не викликає довіри', tone: 'відштовхує тон', disagree: 'не збігається з поглядами', price: 'задорого', missing: 'бракує важливого' },
+      hook: {
+        example: 'конкретна цифра чи приклад', story: 'особиста історія', useful: 'корисна порада', humour: 'гумор', opinion: 'згода з думкою автора', opening: 'перше речення', topic: 'сама тема',
+        price: 'ціна', details: 'деталі', trust: 'довіра до продавця', terms: 'умови угоди', need: 'просто потрібна річ',
+        benefit: 'розв’язує їхню проблему', claims: 'переконливі обіцянки', guarantee: 'гарантія чи легке повернення',
+        curiosity: 'цікавість', promise: 'обіцянка', detail: 'конкретна цифра чи деталь', news: 'звучить як новина',
+      },
+      comment: { adds_own: 'погоджується й додає свій досвід', question: 'питає автора', argues: 'сперечається чи вказує на помилку', thanks: 'дякує чи хвалить кількома словами', joke: 'жартує', tags: 'позначає друга', none: 'не коментує' },
+      depth: { first_sentence: 'лише перше речення', half: 'приблизно половину', to_end: 'до кінця' },
+    },
+  },
+  checks: {
+    title: 'Як Jev читає сам текст',
+    note: 'Це відповіді Jev про сам текст, а не реакції міста. На те, хто його побачить, вони не впливають.',
+    onlyYou: 'Останній рядок бачите лише ви.',
+    labels: {
+      point_first: { post: 'Головне сказано в першому реченні', listing: 'Перше речення каже, що продається', product: 'Перше речення каже, що це і що воно дає' },
+      ask: { post: 'Зрозуміло, чого автор хоче від читача', listing: 'Сказано, як відбудеться угода', product: 'Сказано, що робити далі' },
+      concrete: 'Є конкретна цифра, назва чи приклад',
+      ai: 'Читається як написаний ШІ',
+    },
+    values: { yes: 'так', no: 'ні', unclear: 'неясно' },
   },
   segments: { interest: (label) => `цікавляться: ${label}`, field: (label) => label, age: (label) => `${label} років`, temper: (label) => label, budget: (label) => label, shopping: (label) => `шукають: ${label}`, city: (label) => label },
   fields: { it: 'айтівці', creative: 'творчі професії', education: 'освітяни', medicine: 'медики', trades: 'майстри й будівельники', retail: 'продаж і сервіс', office: 'офісні працівники', finance: 'фінансисти', business: 'бізнес і продажі', public: 'держслужба й силовики', agriculture: 'фермери', transport: 'водії й кур’єри', home: 'у декреті', student: 'студенти', retired: 'пенсіонери' },
@@ -177,6 +225,7 @@ const en = {
   langName: 'English',
   brand: 'Jevtown',
   n: number('en'),
+  and: (items) => (items.length > 1 ? `${items.slice(0, -1).join(', ')} and ${items.at(-1)}` : items[0]),
   title: 'A social network where people write and 10,000 AI personas read',
   lead: 'Post a text, a listing, a product or a headline. Within seconds the town reacts: most scroll past, some like, repost, block, write to the seller or buy.',
   headLine: (post) => `Seen by ${number('en')(post.reach)} in town · ${number('en')(post.stopped)} stopped · ${number('en')(post.glad)} glad · ${number('en')(post.sorry)} sorry. Every reaction comes from Jev.`,
@@ -196,6 +245,12 @@ const en = {
     reached: (reach, people) => `${number('en')(reach)} of ${number('en')(people)} residents saw it.`,
     balance: (glad, sorry) => `Glad: ${number('en')(glad)}. Sorry: ${number('en')(sorry)}.`,
     why: 'A text travels on when the glad outnumber the sorry by at least 10% of the wave.',
+    // What the town said when asked (shared/presets.js:ASKS): the answer given most often, the two or three about equal at the top, or none.
+    asked: {
+      passed: { one: (answer) => `The reason given most often for scrolling past: ${answer}.`, equal: (list) => `Those who scrolled past gave these reasons about equally often: ${list}.`, none: 'No single reason stands out among those who scrolled past.' },
+      annoyed: { one: (answer) => `The reason given most often for getting annoyed: ${answer}.`, equal: (list) => `Those who got annoyed gave these reasons about equally often: ${list}.`, none: 'No single reason stands out among those who got annoyed.' },
+      hook: { one: (answer) => `What most often stopped the people who liked it: ${answer}.`, equal: (list) => `What stopped the people who liked it, about equally often: ${list}.`, none: 'Nothing stands out in what stopped the people who liked it.' },
+    },
   },
   compare: { title: 'Compare the texts', previous: 'Previous version', current: 'This version' },
   presets: {
@@ -227,7 +282,7 @@ const en = {
     return new Date(Date.now() - ms).toLocaleDateString('en', { day: 'numeric', month: 'short' });
   },
   rail: { title: 'The town', size: residentsEn, waiting: 'Waiting for your text', waitingNote: 'Nobody in town has seen anything yet. A text is first shown to the 600 people it is closest to.', voices: 'Voices of the town' },
-  voices: { title: 'Voices of the town', note: 'Random people out of those who reacted. Click a person to open their page.', more: 'Show more', count: (shown, all) => `${number('en')(shown)} of ${number('en')(all)}`, nobody: 'Nobody here yet.', wouldAsk: ['would ask', 'would ask', 'would ask'], details: 'asks about a detail the listing leaves out', nothing: 'takes it, no questions' },
+  voices: { title: 'Voices of the town', note: 'Random people out of those who reacted. Click a person to open their page.', noteSaid: 'Random people out of those who reacted, and some who scrolled past, with an answer Jev gave for each. Click a person to open their page.', more: 'Show more', count: (shown, all) => `${number('en')(shown)} of ${number('en')(all)}`, nobody: 'Nobody here yet.', wouldAsk: ['would ask', 'would ask', 'would ask'], details: 'asks about a detail the listing leaves out', nothing: 'takes it, no questions' },
   ladder: { none: 'would not buy at any of these prices', upTo: (cost) => `would buy only at ${cost} or less`, at: (cost) => `would buy at ${cost}, not above`, even: (cost) => `would buy even at ${cost}` },
   post: { back: 'Feed', replay: 'Replay', everyone: 'all', asking: { listing: 'questions', product: 'prices' }, filter: 'Click a reaction to see these people on the map', picture: (totals) => `A map of the town, a dot for every resident. ${number('en')(totals.reach)} saw it, ${number('en')(totals.stopped)} stopped, ${number('en')(totals.glad)} are glad, ${number('en')(totals.sorry)} are sorry.` },
   crowd: {
@@ -247,6 +302,7 @@ const en = {
     wave: (index, total) => `Wave ${index + 1} · ${number('en')(total)} people in total`,
     went: 'travelled on', stayed: 'stopped here', moodNote: (mood) => `Mood of the wave ${mood}: the share who were glad minus the share who were sorry. A text travels on from +0.10.`,
     followup: (people) => `Asking the ${number('en')(people)} who stopped`,
+    asking: 'Asking some of those who saw it a few more questions…',
     travels: 'it landed, it travels further', stops: 'it stops here',
     watching: 'The town is reading this right now…', failed: 'Something failed and the town did not finish reading. Reload the page to go on.', stale: 'The town did not finish reading this text. Below are the reactions of those who did.',
     done: (waves, seconds, usd) => `${waves} wave${waves === 1 ? '' : 's'} · ${seconds.toFixed(0)} s · $${usd.toFixed(3)}`,
@@ -265,6 +321,46 @@ const en = {
     versionDelta: 'against the previous version',
     unlisted: 'This text did not make it to the public feed; the page works by link only.',
     hiddenByAuthor: 'The author keeps this out of the public feed.',
+    annoyedGroup: (group, sorry, reached) => `The group most often annoyed among those who saw it: “${group}”, ${number('en')(sorry)} of ${number('en')(reached)}.`,
+  },
+  said: {
+    tabs: { scrolled: 'Why they passed', sorry: 'Why annoyed', hook: 'What stopped them', comment: 'Would comment', depth: 'How far they read' },
+    titles: { scrolled: 'Why they scrolled past', sorry: 'Why they got annoyed', hook: 'What stopped the people who liked it', comment: 'What they would write in the comments', depth: 'How far they read' },
+    // Each is followed by `order`.
+    notes: {
+      scrolled: (asked) => `Asked of ${number('en')(asked)} people who scrolled past`, sorry: (asked) => `Asked of ${number('en')(asked)} people who got annoyed`, hook: (asked) => `Asked of ${number('en')(asked)} people who liked it`,
+      comment: (asked) => `Asked of ${number('en')(asked)} people who stopped`, depth: (asked) => `Asked of ${number('en')(asked)} people who stopped`,
+    },
+    order: ', in the order the feed showed them the text, so mostly those it was meant for.',
+    commentNote: 'Not commenting is one of the answers, and the shares are among the people Jev could place.',
+    point: 'Point at an answer to see these people on the map.',
+    lead: 'Highlighted: the answer given most often, or the two or three at the top that are about equal.',
+    flat: 'No answer stands out: more than three are about equal at the top.',
+    drain: (share) => `For ${share} of those asked, nothing about the person hinted at an answer. The bars leave them out.`,
+    split: (text, readers) => `${text} of these answers are about the text itself, ${readers} about who was reading it.`,
+    labels: {
+      why: { not_for_them: 'not for them', weak_opening: 'the opening does not hook', unclear: 'unclear what it is', too_long: 'too long to take in', nothing_new: 'nothing new', distrust: 'hard to believe', tone: 'off-putting tone', disagree: 'at odds with their views', price: 'too expensive', missing: 'something important is missing' },
+      hook: {
+        example: 'a concrete number or example', story: 'a personal story', useful: 'a tip they can use', humour: 'humour', opinion: 'an opinion they share', opening: 'the first sentence', topic: 'the topic itself',
+        price: 'the price', details: 'the details', trust: 'trust in the seller', terms: 'the terms of the deal', need: 'simply needing it',
+        benefit: 'it solves their problem', claims: 'believable claims', guarantee: 'a guarantee or an easy return',
+        curiosity: 'curiosity', promise: 'the promise', detail: 'a concrete number or detail', news: 'it sounds new or important',
+      },
+      comment: { adds_own: 'agrees and adds their own experience', question: 'asks the author a question', argues: 'argues or points out a mistake', thanks: 'thanks or praises in a few words', joke: 'jokes', tags: 'tags a friend', none: 'would not comment' },
+      depth: { first_sentence: 'only the first sentence', half: 'about half', to_end: 'to the end' },
+    },
+  },
+  checks: {
+    title: 'How Jev reads the text',
+    note: 'Jev’s answers about the text itself, not the town’s reactions. They do not change who sees it.',
+    onlyYou: 'Only you see the last line.',
+    labels: {
+      point_first: { post: 'The main point is in the first sentence', listing: 'The first sentence says what is for sale', product: 'The first sentence says what it is and what it gives' },
+      ask: { post: 'Clear what readers should do', listing: 'Says how the deal is done', product: 'Says what to do next' },
+      concrete: 'Has a concrete number, name or example',
+      ai: 'Reads as written by AI',
+    },
+    values: { yes: 'yes', no: 'no', unclear: 'unclear' },
   },
   segments: { interest: (label) => `into ${label}`, field: (label) => label, age: (label) => `aged ${label}`, temper: (label) => label, budget: (label) => label, shopping: (label) => `looking for ${label}`, city: (label) => label },
   fields: { it: 'IT people', creative: 'creatives', education: 'teachers', medicine: 'medics', trades: 'tradespeople', retail: 'retail and service', office: 'office workers', finance: 'finance people', business: 'business and sales', public: 'public servants', agriculture: 'farmers', transport: 'drivers and couriers', home: 'stay-at-home parents', student: 'students', retired: 'pensioners' },

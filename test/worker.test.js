@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderOg, OG_W, OG_H } from '../worker/og.js';
-import { openingRequest, openingAnswers } from '../public/shared/requests.js';
-import { PRESETS, lookOf, LOOKS, CANT_TELL } from '../public/shared/presets.js';
+import { openingRequest, openingAnswers, checksFor } from '../public/shared/requests.js';
+import { PRESETS, ASKS, lookOf, answersFor, LOOKS, CANT_TELL } from '../public/shared/presets.js';
 import { persona } from '../public/shared/personas.js';
 import { DICTIONARIES } from '../public/i18n.js';
 import { toAsk, askTown, ASK_STAGE } from '../worker/town.js';
@@ -34,6 +34,36 @@ test('every reaction has a look and words in both languages', () => {
     for (const t of Object.values(DICTIONARIES)) assert.ok(t.presets[presetId]?.name, `${t.lang}: no name for ${presetId}`);
   }
   for (const answer of Object.keys(PRESETS.listing.followUp.answers)) assert.ok(DICTIONARIES.uk.answers[answer], `uk: no words for the buyer's question ${answer}`);
+});
+
+test('every closing answer and text check has words in both languages', () => {
+  for (const t of Object.values(DICTIONARIES)) {
+    for (const [question, { presets }] of Object.entries(ASKS)) {
+      for (const presetId of presets) {
+        for (const look of Object.keys(LOOKS)) {
+          for (const id of Object.keys(answersFor(question, presetId, look))) {
+            if (id !== CANT_TELL) assert.ok(t.said.labels[question][id], `${t.lang}: no words for ${question}.${id}`);
+          }
+        }
+      }
+    }
+    for (const presetId of Object.keys(PRESETS)) {
+      for (const [id] of checksFor(presetId)) {
+        const label = t.checks.labels[id];
+        assert.ok(typeof label === 'string' ? label : label[presetId], `${t.lang}: no words for the check ${id} of a ${presetId}`);
+      }
+    }
+    for (const [key, sentences] of Object.entries(t.verdict.asked)) {
+      assert.equal(typeof sentences.one('x'), 'string', `${t.lang}: ${key}.one`);
+      assert.equal(typeof sentences.equal('x, y'), 'string', `${t.lang}: ${key}.equal`);
+      assert.equal(typeof sentences.none, 'string', `${t.lang}: ${key}.none`);
+    }
+    assert.equal(t.and(['a']), 'a');
+    assert.match(t.and(['a', 'b', 'c']), /^a, b \S+ c$/);
+    // What the page already showed keeps its shape.
+    for (const key of ['label', 'everyone', 'why']) assert.equal(typeof t.verdict[key], 'string', `${t.lang}: verdict.${key}`);
+    for (const key of ['stopped', 'reached', 'balance']) assert.equal(typeof t.verdict[key], 'function', `${t.lang}: verdict.${key}`);
+  }
 });
 
 // -- asking the town at the last close (worker/town.js), against a small stand-in for D1
