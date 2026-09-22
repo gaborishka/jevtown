@@ -29,8 +29,9 @@ const uk = {
   },
   verdict: {
     label: 'Підсумок',
-    everyone: 'Зайшло всьому місту', stopped: (wave) => `Не зайшло далі ${['першої', 'другої', 'третьої'][wave] ?? `${wave + 1}-ї`} хвилі`,
+    everyone: 'Зайшло всьому місту', everyoneAudience: 'Зайшло всій аудиторії', stopped: (wave) => `Не зайшло далі ${['першої', 'другої', 'третьої'][wave] ?? `${wave + 1}-ї`} хвилі`,
     reached: (reach, people) => `Текст побачили ${number('uk')(reach)} із ${number('uk')(people)} ${plural(people, ['мешканця', 'мешканців', 'мешканців'])}.`,
+    reachedAudience: (reach, people) => `Текст побачили ${number('uk')(reach)} із ${number('uk')(people)} ${plural(people, ['людини', 'людей', 'людей'])} в аудиторії.`,
     balance: (glad, sorry) => `Раді: ${number('uk')(glad)}. Незадоволені: ${number('uk')(sorry)}.`,
     why: 'Текст іде далі, коли радих у хвилі більше, ніж незадоволених, щонайменше на 10% хвилі.',
     // What the town said when asked (shared/presets.js:ASKS): the answer given most often, the two or three about equal at the top, or none.
@@ -52,6 +53,10 @@ const uk = {
   compose: {
     // The crowd is picked by the language of the text, so there is nothing to switch.
     readers: { uk: (people) => `Читатиме українське місто, ${residentsUk(people)}`, en: (people) => `Читатиме англомовне місто, ${residentsUk(people)}` },
+    readersAudience: { uk: 'Читатимуть лише ті з українського міста, хто підходить під опис', en: 'Читатимуть лише ті з англомовного міста, хто підходить під опис' },
+    audience: 'Аудиторія', audienceLabel: 'Для кого цей текст', audiencePlaceholder: 'Наприклад: айтівці, які цікавляться стартапами',
+    audienceNote: 'Необов’язково. Текст прочитають лише ті мешканці, хто підходить під опис. Місто знає про кожного роботу, вік, захоплення, гроші й те, що людина хоче купити, тож з опису враховується лише це. Опис видно поруч із постом, а кожна нова версія піде до таких самих людей.',
+    audienceRemove: 'Прибрати аудиторію', audienceKept: (text) => `Нову версію прочитає та сама аудиторія: ${text}`, withAudience: 'Перевірити на аудиторії',
     nickname: 'Ваше ім’я або нік', anonymous: 'анонім', listed: 'У спільну стрічку', unlisted: 'Лише за посиланням',
     text: 'Текст', kind: 'Що ви пишете', prices: 'Ціни', currency: 'Валюта',
     ladder: {
@@ -102,9 +107,12 @@ const uk = {
   },
   blocks: {
     shownNote: 'За кого алгоритм стрічки прийняв цей текст. Оцінки Jev від 0 до 1.',
-    tabs: { stopped: 'Зупинилися', glad: 'Сподобалось', sorry: 'Роздратувало', shown: 'Кому показали' },
-    titles: { stopped: 'Хто зупинився', glad: 'Кому сподобалось', sorry: 'Кого роздратувало', shown: 'Кому показали' },
+    tabs: { stopped: 'Зупинилися', glad: 'Сподобалось', sorry: 'Роздратувало', shown: 'Кому показали', described: 'Аудиторія' },
+    titles: { stopped: 'Хто зупинився', glad: 'Кому сподобалось', sorry: 'Кого роздратувало', shown: 'Кому показали', described: 'Хто в аудиторії' },
     segmentNote: (what, share) => `Групи, де це зачепило найбільшу частку людей. Серед усього міста ${what}: ${share}.`,
+    segmentNoteAudience: (what, share) => `Групи, де це зачепило найбільшу частку людей. Серед усієї аудиторії ${what}: ${share}.`,
+    describedNote: (people) => `Як Jev прочитав опис: для кожної названої частини групи, які підходять, з оцінками від 0 до 1. Текст могли побачити лише ${number('uk')(people)} ${plural(people, ['людина, яка підходить', 'людини, які підходять', 'людей, які підходять'])} під усі частини, решта міста його не бачила.`,
+    unlistedAudience: 'Цей пост не потрапив у спільну стрічку через опис аудиторії, сторінка доступна лише за посиланням.',
     alike: 'Текст зайшов усім приблизно однаково, жодна група не виділилась. Ось найбільші з них.',
     bestPrice: (cost, buyers, revenue) => `Найбільше заробляє ${cost}: ${number('uk')(buyers)} ${plural(buyers, ['покупець', 'покупці', 'покупців'])}, виторг ${revenue}.`,
     nobody: 'Ніхто не виділився.',
@@ -164,6 +172,7 @@ const uk = {
   persona: { lives: 'Живе тут', history: 'Що робить зі свіжими текстами', noHistory: 'Свіжі тексти сюди не дійшли.', shopping: 'Шукає', nothing: 'нічого не шукає', neighbours: 'Підсвічені ті, хто має те саме головне захоплення. Сусіди на карті схожі: той самий вік і ті самі інтереси.', newStreet: 'Підсвічені ті, хто має те саме головне захоплення. Нові мешканці селяться під містом у порядку приїзду, тож сусіди тут бувають різні.', since: (date) => `У місті з ${date}`, write: 'Написати пост', next: 'Сусіди', years: (age) => `${age} ${plural(age, ['рік', 'роки', 'років'])}` },
   blocked: {
     text: (reasons) => `Не запощено${reasons.length ? `: у тексті ${reasons.join(', ')}` : ''}. Перепишіть і спробуйте ще раз.`,
+    audience: (reasons) => `Не запощено${reasons.length ? `: в описі аудиторії ${reasons.join(', ')}` : ''}. Перепишіть і спробуйте ще раз.`,
     reasons: { hate: 'ворожнеча до людей', sexual: 'відвертий сексуальний зміст', violence: 'погрози', private_data: 'чужі особисті дані', illegal: 'продаж забороненого', insult: 'образи', gibberish: 'набір символів без змісту' },
   },
   me: {
@@ -212,9 +221,23 @@ const uk = {
       limit: 'На сьогодні досить. Спробуйте завтра.', jev: 'Jev зараз не відповідає. Нічого не загубилося, спробуйте ще раз.',
     },
   },
-  card: { open: 'Картка поста', saw: (people) => `із ${number('uk')(people)} ${plural(people, ['мешканця', 'мешканців', 'мешканців'])} побачили`, share: 'Поділитися', download: 'Зберегти PNG', close: 'Закрити' },
+  card: { open: 'Картка поста', saw: (people) => `із ${number('uk')(people)} ${plural(people, ['мешканця', 'мешканців', 'мешканців'])} побачили`, sawAudience: (people) => `із ${number('uk')(people)} ${plural(people, ['людини', 'людей', 'людей'])} аудиторії побачили`, share: 'Поділитися', download: 'Зберегти PNG', close: 'Закрити' },
   share: 'Скопіювати посилання', copied: 'Скопійовано', version: 'версія',
-  errors: { limit: 'На сьогодні ліміт постів вичерпано. Приходьте завтра або запустіть свою копію з власним ключем.', empty: 'Напишіть текст, хоч один рядок.', bad_text: 'Текст має бути від 1 до 2000 символів.', bad_prices: 'Виправте позначені ціни: потрібні щонайменше дві різні, числами.', no_key: 'На сервері не задано ключ Jev.', not_yours: 'Нову версію може запостити лише автор, із того самого браузера.', bad_request: 'Запит не зрозуміло. Оновіть сторінку і спробуйте ще раз.', busy: 'Місто ще читає попередню версію. Зачекайте, поки дочитає.', not_found: 'Такої сторінки немає.', error: 'Щось пішло не так. Спробуйте ще раз.' },
+  // An audience in words (shared/feed.js:partsOf): the parts of a person the town knows, and how the page names them.
+  audience: {
+    line: (text) => `Аудиторія: ${text}`,
+    size: (people) => `${number('uk')(people)} ${plural(people, ['мешканець підходить', 'мешканці підходять', 'мешканців підходять'])} під кожну частину опису`,
+    part: { field: 'Робота', age: 'Вік', interest: 'Захоплення', budget: 'Гроші', shopping: 'Хоче купити' },
+    partWord: { field: 'роботу', age: 'вік', interest: 'захоплення', budget: 'гроші', shopping: 'покупки' },
+    open: (list) => `Опис не обмежує: ${list}.`,
+    outside: 'поза аудиторією',
+    picture: 'Решта міста поза аудиторією і лишається темною.',
+    legend: { dark: 'поза аудиторією', waiting: 'в аудиторії, не побачили' },
+  },
+  errors: { limit: 'На сьогодні ліміт постів вичерпано. Приходьте завтра або запустіть свою копію з власним ключем.', empty: 'Напишіть текст, хоч один рядок.', bad_text: 'Текст має бути від 1 до 2000 символів.', bad_prices: 'Виправте позначені ціни: потрібні щонайменше дві різні, числами.', no_key: 'На сервері не задано ключ Jev.', not_yours: 'Нову версію може запостити лише автор, із того самого браузера.', bad_request: 'Запит не зрозуміло. Оновіть сторінку і спробуйте ще раз.', busy: 'Місто ще читає попередню версію. Зачекайте, поки дочитає.', not_found: 'Такої сторінки немає.', error: 'Щось пішло не так. Спробуйте ще раз.',
+    no_fit: 'Місто не може розібрати, хто підходить під цей опис. Опишіть людей через роботу, вік, захоплення, гроші або те, що вони хочуть купити. Щоб читало все місто, залиште поле порожнім.',
+    few_fit: (fits, least) => `Під кожну частину опису в місті підходять: ${number('uk')(fits)}. Для перевірки потрібно щонайменше ${least}. Назвіть менше або ширше.`,
+    bad_audience: 'Опис аудиторії має бути не довшим за 200 символів.' },
 };
 
 const en = {
@@ -238,8 +261,9 @@ const en = {
   },
   verdict: {
     label: 'The result',
-    everyone: 'It landed with the whole town', stopped: (wave) => `It did not get past the ${['first', 'second', 'third'][wave] ?? `${wave + 1}th`} wave`,
+    everyone: 'It landed with the whole town', everyoneAudience: 'It landed with the whole audience', stopped: (wave) => `It did not get past the ${['first', 'second', 'third'][wave] ?? `${wave + 1}th`} wave`,
     reached: (reach, people) => `${number('en')(reach)} of ${number('en')(people)} residents saw it.`,
+    reachedAudience: (reach, people) => `${number('en')(reach)} of the ${number('en')(people)} people in the audience saw it.`,
     balance: (glad, sorry) => `Glad: ${number('en')(glad)}. Sorry: ${number('en')(sorry)}.`,
     why: 'A text travels on when the glad outnumber the sorry by at least 10% of the wave.',
     // What the town said when asked (shared/presets.js:ASKS): the answer given most often, the two or three about equal at the top, or none.
@@ -260,6 +284,10 @@ const en = {
   nav: { feed: 'Feed', crowd: 'The town', me: 'Resident', write: 'Write', back: 'Back', about: 'Every reaction comes from Jev, a model that answers with probabilities and writes no text.' },
   compose: {
     readers: { uk: (people) => `The Ukrainian town will read it, ${residentsEn(people)}`, en: (people) => `The English-speaking town will read it, ${residentsEn(people)}` },
+    readersAudience: { uk: 'Only the people of the Ukrainian town who fit the description will read it', en: 'Only the people of the English-speaking town who fit the description will read it' },
+    audience: 'Audience', audienceLabel: 'Whom it is for', audiencePlaceholder: 'For example: people who work in IT and are into startups',
+    audienceNote: 'Optional. Only the people in town who fit the description read the text. The town knows each person\'s work, age, interests, money and what they are looking to buy, so only these parts of the description count. It is shown with the post, and every new version goes to the same kind of people.',
+    audienceRemove: 'Remove the audience', audienceKept: (text) => `The new version goes to the same audience: ${text}`, withAudience: 'Check it with an audience',
     nickname: 'Your name or nickname', anonymous: 'anonymous', listed: 'To the public feed', unlisted: 'By link only',
     text: 'Text', kind: 'What you are writing', prices: 'Prices', currency: 'Currency',
     ladder: {
@@ -306,9 +334,12 @@ const en = {
   },
   blocks: {
     shownNote: 'Whom the feed algorithm took this text for. Scores from Jev, 0 to 1.',
-    tabs: { stopped: 'Stopped', glad: 'Liked it', sorry: 'Got annoyed', shown: 'Shown to' },
-    titles: { stopped: 'Who stopped', glad: 'Who liked it', sorry: 'Who got annoyed', shown: 'Whom it was shown to' },
+    tabs: { stopped: 'Stopped', glad: 'Liked it', sorry: 'Got annoyed', shown: 'Shown to', described: 'Audience' },
+    titles: { stopped: 'Who stopped', glad: 'Who liked it', sorry: 'Who got annoyed', shown: 'Whom it was shown to', described: 'Who is in the audience' },
     segmentNote: (what, share) => `The groups where it caught the largest share of people. Across the whole town, ${what}: ${share}.`,
+    segmentNoteAudience: (what, share) => `The groups where it caught the largest share of people. Across the audience, ${what}: ${share}.`,
+    describedNote: (people) => `How Jev read the description: for each part it names, the groups that count, scored 0 to 1. Only the ${number('en')(people)} people who fit every part could see the text; the rest of the town did not.`,
+    unlistedAudience: 'This post did not make it to the public feed because of its audience description; the page works by link only.',
     alike: 'It worked on everybody about alike, no group stood out. Here are the biggest ones.',
     bestPrice: (cost, buyers, revenue) => `${cost} earns the most: ${number('en')(buyers)} buyer${buyers === 1 ? '' : 's'}, revenue ${revenue}.`,
     nobody: 'Nobody stood out.',
@@ -363,6 +394,7 @@ const en = {
   persona: { lives: 'Lives here', history: 'What they do with fresh texts', noHistory: 'Fresh texts did not reach them.', shopping: 'Looking for', nothing: 'not looking for anything', neighbours: 'Lit up are the people with the same main interest. Neighbours on the map are alike: the same age and the same interests.', newStreet: 'Lit up are the people with the same main interest. New residents settle under the town in the order they came, so neighbours here can be anybody.', since: (date) => `In town since ${date}`, write: 'Write a post', next: 'Neighbours', years: (age) => `${age} years old` },
   blocked: {
     text: (reasons) => `Not posted${reasons.length ? `: the text has ${reasons.join(', ')}` : ''}. Rewrite it and try again.`,
+    audience: (reasons) => `Not posted${reasons.length ? `: the audience description has ${reasons.join(', ')}` : ''}. Rewrite it and try again.`,
     reasons: { hate: 'hatred of people', sexual: 'explicit sexual content', violence: 'threats', private_data: "somebody's private data", illegal: 'an offer of something illegal', insult: 'insults', gibberish: 'no meaning, only characters' },
   },
   me: {
@@ -410,9 +442,22 @@ const en = {
       limit: 'That is enough for today. Try again tomorrow.', jev: 'Jev is not answering right now. Nothing is lost, try again.',
     },
   },
-  card: { open: 'Post card', saw: (people) => `of ${number('en')(people)} residents saw it`, share: 'Share', download: 'Save the PNG', close: 'Close' },
+  card: { open: 'Post card', saw: (people) => `of ${number('en')(people)} residents saw it`, sawAudience: (people) => `of the ${number('en')(people)} in the audience saw it`, share: 'Share', download: 'Save the PNG', close: 'Close' },
   share: 'Copy the link', copied: 'Copied', version: 'version',
-  errors: { limit: 'The daily limit of posts is used up. Come back tomorrow, or run your own copy with your own key.', empty: 'Write something first, a line is enough.', bad_text: 'The text must be 1 to 2000 characters.', bad_prices: 'Fix the marked prices: at least two different ones, as numbers.', no_key: 'No Jev key is set on the server.', not_yours: 'Only the author, from the same browser, can post a new version.', bad_request: 'The request was not understood. Reload the page and try again.', busy: 'The previous version is still running. Wait until it finishes.', not_found: 'There is no such page.', error: 'Something went wrong. Try again.' },
+  audience: {
+    line: (text) => `Audience: ${text}`,
+    size: (people) => `${number('en')(people)} people in town fit every part of it`,
+    part: { field: 'Work', age: 'Age', interest: 'Into', budget: 'Money', shopping: 'Looking to buy' },
+    partWord: { field: 'work', age: 'age', interest: 'interests', budget: 'money', shopping: 'shopping' },
+    open: (list) => `Left open by the description: ${list}.`,
+    outside: 'not in the audience',
+    picture: 'The rest of the town is outside the audience and stays dark.',
+    legend: { dark: 'outside the audience', waiting: 'in the audience, not shown' },
+  },
+  errors: { limit: 'The daily limit of posts is used up. Come back tomorrow, or run your own copy with your own key.', empty: 'Write something first, a line is enough.', bad_text: 'The text must be 1 to 2000 characters.', bad_prices: 'Fix the marked prices: at least two different ones, as numbers.', no_key: 'No Jev key is set on the server.', not_yours: 'Only the author, from the same browser, can post a new version.', bad_request: 'The request was not understood. Reload the page and try again.', busy: 'The previous version is still running. Wait until it finishes.', not_found: 'There is no such page.', error: 'Something went wrong. Try again.',
+    no_fit: 'The town cannot tell who fits this description. Describe people by their work, age, interests, money or what they are looking to buy. For the whole town, leave it empty.',
+    few_fit: (fits, least) => `People in town who fit every part of the description: ${number('en')(fits)}. A check needs at least ${least}. Name fewer things, or broader ones.`,
+    bad_audience: 'The audience description must be at most 200 characters.' },
 };
 
 export const DICTIONARIES = { uk, en };

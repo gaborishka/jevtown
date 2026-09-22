@@ -176,3 +176,25 @@ test('a question Jev fails leaves out its own lists and keeps what the others pa
   assert.equal(logged.mock.callCount(), 1);
   assert.deepEqual(logged.mock.calls[0].arguments.slice(0, 2), ['ask', 'hook']);
 });
+
+test('both languages have the same words, down to every key', () => {
+  const { uk, en } = DICTIONARIES;
+  const missing = [];
+  const walk = (a, b, path) => {
+    for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      const where = path ? `${path}.${key}` : key;
+      if (where === 'answers' && en.answers === null) continue; // the buyers' questions are English in presets.js
+      if (!(key in a) || !(key in b)) missing.push(where);
+      else if (a[key] && b[key] && typeof a[key] === 'object' && !Array.isArray(a[key])) walk(a[key], b[key], where);
+      else if (typeof a[key] !== typeof b[key]) missing.push(`${where} (${typeof a[key]} / ${typeof b[key]})`);
+    }
+  };
+  walk(uk, en, '');
+  assert.deepEqual(missing, []);
+  for (const t of [uk, en]) {
+    for (const words of [t.audience.size(712), t.audience.line('gardeners'), t.audience.open(t.and(['age', 'money'])), t.compose.audienceKept('gardeners'), t.verdict.reachedAudience(600, 712),
+      t.blocks.describedNote(712), t.blocks.segmentNoteAudience('stopped', '10%'), t.blocked.audience(['hate']), t.errors.few_fit(1, 50), t.card.sawAudience(712), t.compose.readersAudience.uk, t.compose.readersAudience.en]) {
+      assert.ok(typeof words === 'string' && words.length > 5 && !words.includes('undefined'), `${t.lang}: ${words}`);
+    }
+  }
+});

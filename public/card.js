@@ -2,7 +2,7 @@
 // on a canvas in the browser, so it speaks the language of the page and needs no server. The number
 // it is about is the reach: how many of the town saw the text.
 import { GRID } from './shared/personas.js';
-import { PRESETS, LOOKS, lookOf, NOT_SHOWN } from './shared/presets.js';
+import { PRESETS, LOOKS, IN_AUDIENCE, lookOf, NOT_SHOWN } from './shared/presets.js';
 
 export const CARD_W = 1080;
 export const CARD_H = 1350;
@@ -45,14 +45,14 @@ function linesOf(context, text, width, most) {
   return [...lines.slice(0, most - 1), `${last.trimEnd()}…`];
 }
 
-/** The crowd of the post: the square of the 10,000 and, under it, the rows of the people visitors moved in. */
-function drawCrowd(context, presetId, reactions, left, top, side) {
+/** The crowd of the post: the square of the 10,000 and, under it, the rows of the people visitors moved in. Members of an audience the text did not reach are lighter. */
+function drawCrowd(context, presetId, reactions, left, top, side, audience = null) {
   const cell = side / GRID;
   const keys = Object.keys(PRESETS[presetId].reactions);
   const paths = {};
   for (let id = 0; id < reactions.length; id++) {
     const byte = reactions[id] ?? NOT_SHOWN;
-    const look = byte ? lookOf(presetId, keys[byte - 1]) : 'dark';
+    const look = byte ? lookOf(presetId, keys[byte - 1]) : audience?.[id] === 1 ? 'member' : 'dark';
     const path = (paths[look] ??= new Path2D());
     const x = left + ((id % GRID) + 0.5) * cell;
     const y = top + (Math.floor(id / GRID) + 0.5 + (id >= GRID * GRID ? 0.8 : 0)) * cell;
@@ -60,13 +60,13 @@ function drawCrowd(context, presetId, reactions, left, top, side) {
     path.arc(x, y, cell * 0.36, 0, Math.PI * 2);
   }
   for (const [look, path] of Object.entries(paths)) {
-    context.fillStyle = look === 'hollow' ? LOOKS.scrolled : LOOKS[look];
+    context.fillStyle = look === 'hollow' ? LOOKS.scrolled : look === 'member' ? IN_AUDIENCE : LOOKS[look];
     context.fill(path);
   }
 }
 
 /**
- * post: { text, by, kind, presetId, reactions, reach, size, headline, reachWords, counters: [{ look, value, label }], address }
+ * post: { text, by, kind, presetId, reactions, audience?, reach, size, headline, reachWords, counters: [{ look, value, label }], address }
  * → a canvas with the card on it.
  */
 export async function drawCard(post) {
@@ -127,7 +127,7 @@ export async function drawCard(post) {
   context.fill();
   context.stroke();
   const fit = Math.min(side, (side * GRID) / (rows + (rows > GRID ? 1.2 : 0))); // a town with residents is a little taller than wide
-  drawCrowd(context, post.presetId, post.reactions, PAD + 20 + (side - fit) / 2, mapTop + 20, fit);
+  drawCrowd(context, post.presetId, post.reactions, PAD + 20 + (side - fit) / 2, mapTop + 20, fit, post.audience);
 
   const column = PAD + box + 56;
   post.counters.forEach(({ look, value, label }, index) => {
