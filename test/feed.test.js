@@ -5,7 +5,7 @@ import { exposure, firstWave, nextWave, travels, mood, gatherAsked, whoIsAsked, 
 import { residentPersona } from '../public/shared/resident.js';
 import { drawReaction, CONFIDENT_FROM } from '../public/shared/draw.js';
 import { reactionRequest, exposureRequest, exposureScores, askRequest, openingAnswers, questionId } from '../public/shared/requests.js';
-import { PRESETS, priceLadder, asksFor } from '../public/shared/presets.js';
+import { PRESETS, priceLadder, asksFor, sentences } from '../public/shared/presets.js';
 import { weightOf } from '../worker/town.js';
 import { rng } from '../public/shared/rng.js';
 
@@ -105,7 +105,7 @@ test('why goes to the annoyed first, up to 40, then to those who scrolled past',
   const groups = (sorry, scrolled) => ({ scrolled, sorry, glad: [1, 2], stopped: [3, 4] });
   const count = (asked, from, to) => asked.filter((id) => id >= from && id < to).length;
   const mixed = whoIsAsked('why', groups(range(0, 60), range(1000, 200)));
-  assert.deepEqual([count(mixed, 0, 1000), count(mixed, 1000, 2000)], [40, 60]);
+  assert.deepEqual(mixed, [...range(0, 40), ...range(1000, 60)]);
   const few = whoIsAsked('why', groups(range(0, 5), range(1000, 200)));
   assert.deepEqual([count(few, 0, 1000), count(few, 1000, 2000)], [5, 95]);
   assert.equal(whoIsAsked('why', groups(range(0, 150), [])).length, 100);
@@ -116,6 +116,7 @@ test('why goes to the annoyed first, up to 40, then to those who scrolled past',
   assert.equal(whoIsAsked('comment', kept), kept.stopped);
   assert.equal(whoIsAsked('depth', kept), kept.stopped);
   assert.deepEqual(asking('post', 'short', groups([], range(1000, 9))).map((asked) => asked.question), []);
+  assert.deepEqual(asking('post', 'short', groups([], range(1000, 10))).map((asked) => asked.question), ['why']);
 });
 
 test('how far people read is asked only of a longer text of three sentences or more', () => {
@@ -128,6 +129,12 @@ test('how far people read is asked only of a longer text of three sentences or m
   assert.deepEqual(asksFor('listing', three(82, 82, 81)), ['why', 'hook', 'depth']);
   assert.deepEqual(asksFor('product', three(82, 82, 81)), ['why', 'hook']);
   assert.deepEqual(asksFor('headline', three(82, 82, 81)), ['why', 'hook']);
+  // The edges: 200 characters and three sentences.
+  assert.deepEqual(asksFor('post', three(65, 65, 65)), ['why', 'hook', 'comment', 'depth']);
+  assert.deepEqual(asksFor('post', three(65, 65, 64)), ['why', 'hook', 'comment']);
+  assert.deepEqual(asksFor('post', `${'a'.repeat(120)}. ${'b'.repeat(127)}.`), ['why', 'hook', 'comment']);
+  assert.equal(sentences('Price 2.5 kg. See shop.com. Done!'), 3);
+  assert.equal(sentences('Why? Because… yes\nnext'), 4);
 });
 
 test('a closing question says what the person did, never why, and offers the answers their look has', () => {

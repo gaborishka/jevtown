@@ -100,10 +100,12 @@ function fakeD1({ stored = [], locked = true, down = false } = {}) {
   return { ran, prepare: statement, batch: async (statements) => ran.push(...statements) };
 }
 
-/** A town with a fake Jev: every person gets the first answer offered, and a tenth goes to the drain. */
-function townWith(t, db, { spent = false } = {}) {
+/** A town with a fake Jev: every person gets the first answer offered, and a tenth goes to the drain. Jev refuses the `failing` question. */
+function townWith(t, db, { spent = false, failing = null } = {}) {
   const fetch = t.mock.method(globalThis, 'fetch', async (url, init) => {
     const { questions } = JSON.parse(init.body);
+    // A 400 is not retried (jev.js), so the test does not wait out a backoff.
+    if (failing && Object.values(questions)[0].instructions.endsWith(ASKS[failing].ask)) return new Response('{}', { status: 400 });
     const answers = Object.fromEntries(Object.entries(questions).map(([id, question]) => [id, { probabilities: { [Object.keys(question.criteria)[0]]: 0.9, [CANT_TELL]: 0.1 } }]));
     return new Response(JSON.stringify({ answers, usage: { input_tokens: 1000 } }), { status: 200 });
   });
@@ -160,4 +162,17 @@ test('when D1 fails, the check still closes with the lists marked failed', async
   assert.deepEqual(said, { lists: {}, picks: {}, missing: { scrolled: 'failed', hook: 'failed', comment: 'failed', depth: 'failed' } });
   assert.equal(town.fetch.mock.callCount(), 0);
   assert.equal(logged.mock.callCount(), 1);
+});
+
+test('a question Jev fails leaves out its own lists and keeps what the others paid for', async (t) => {
+  const logged = t.mock.method(console, 'error', () => {});
+  const db = fakeD1();
+  const town = townWith(t, db, { failing: 'hook' });
+  const { said } = await town.ask();
+  assert.deepEqual(said.missing, { hook: 'failed' });
+  assert.deepEqual(Object.keys(said.lists), ['scrolled', 'comment', 'depth']);
+  const stored = db.ran.filter((statement) => statement.sql.startsWith('INSERT INTO batches'));
+  assert.deepEqual(stored.map((statement) => statement.args[2]).sort(), ['c', 'd', 'y']);
+  assert.equal(logged.mock.callCount(), 1);
+  assert.deepEqual(logged.mock.calls[0].arguments.slice(0, 2), ['ask', 'hook']);
 });
