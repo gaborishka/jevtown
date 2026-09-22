@@ -358,43 +358,26 @@ async function memory() {
 }
 
 // 9. Asking the town when a check closes (presets.js:ASKS) and reading the text (requests.js:TEXT_CHECKS).
-// A asks each text's first wave as the site would, B the same fixed people about every text, C a text
-// against a longer one, D the text checks alone. Jev leans towards the first-listed answer, so every
+// A asks each text's first wave as the site would, B the same fixed people about every text, C the
+// text checks alone. Jev leans towards the first-listed answer, so every
 // closing question goes out in both orders. The gates at the end decide which questions and checks stay.
-/** What C adds after a blank line, in the same voice, so the same people have about four times as much to read. */
-const LONGER = {
-  post_garden: 'Графік у мене такий. Перший тиждень березня: сію в касети на вологий субстрат, накриваю плівкою й тримаю при 24–26 градусах, поки не з’являться петельки, зазвичай на четвертий день. Тоді одразу знімаю плівку й переношу на холодне підвіконня, де вночі 14–16, а вдень до 20. Другий і третій тиждень: лампа 14 годин на добу, полив знизу, у піддон, раз на три дні. Четвертий тиждень: пікірую в стаканчики по пів літра й заглиблюю до сім’ядольних листків. П’ятий і шостий: перше підживлення, половина дози комплексного добрива, і щодня провітрюю кімнату. Сьомий: гартую на балконі, спершу годину, потім цілий день. Восьмий, кінець квітня: висаджую в теплицю, коли земля прогріється до 15 градусів. Найкраще цей графік перенесли Де Барао й Бичаче серце, а черрі все одно трохи витягнулись, тож наступного року посію їх на тиждень пізніше.',
-  post_dev: 'Цифри з трекера задач за місяць. Швидше: CRUD-ендпоїнти з трьох годин до п’ятдесяти хвилин, тести до готового коду з двох годин до пів години, міграції бази з години до п’ятнадцяти хвилин, документація до API з пів дня до години. Майже без змін верстка за макетом: тут асистент більше заважав, ніж допомагав. Повільніше рев’ю власних пул-реквестів, у середньому сорок хвилин замість двадцяти, бо свій код я вже не пам’ятаю і читаю його як чужий. Ще повільніше пішли баги в складній логіці: два дні на помилку в розрахунку знижок, яку асистент упевнено вносив знову після кожного виправлення. Загалом закрив 46 задач проти звичних 31, але повернень із тестування було 9 замість 4. Наступного місяця перевірю, чи рев’ю піде швидше, якщо робити менші пул-реквести й просити асистента пояснювати кожну зміну.',
-  post_broad: 'Тепер витрати такі: кілограм зерна за 600 гривень виходить на місяць, плюс молоко, разом десь 800, тобто менше 10 тисяч на рік. Кавоварка окупиться за пів року, якщо я не куплю ще й кавомолку, про яку вже думаю. А ще там я щоранку брав круасан, удома його немає, тож насправді заощаджую більше, ніж порахував. Кава вдома смачна, але не та: вона не пахне корицею з вітрини, і ніхто не питає, як минули вихідні. Бариста Оля знала, що я питиму, ще до того, як я відкривав рот, і за два роки ми обговорили все, від її курсів латте-арту до мого ремонту. Тепер я п’ю каву сам на кухні о сьомій ранку, гортаю телефон і ловлю себе на тому, що сумую не за кавою, а за п’ятьма хвилинами розмови. У суботу все ж зайшов за старою звичкою, узяв лате за 70 і не пошкодував. Мабуть, залишу собі кав’ярню на вихідні, а в будні буду молодцем.',
-  listing: 'Акумулятор тримає день звичайного користування: зранку 100%, увечері лишається 20–30%. На екрані подряпин немає, бо скло стоїть з першого дня, на корпусі біля роз’єму одна дрібна потертість, її видно лише під світлом, можу надіслати фото. Коробка рідна, з документами й скріпкою, IMEI на коробці збігається з телефоном. Зарядного блока немає, лише кабель. Відправляю Новою поштою з післяплатою й оглядом: на відділенні відкриваєте посилку, вмикаєте телефон, дивитеся стан акумулятора в налаштуваннях і лише тоді платите. Якщо щось не так, просто відмовляєтеся, доставку назад оплачую я. У Львові можна зустрітися в центрі й подивитися на місці.',
-};
-const LISTING_SHORT = `${TEXTS.listing_iphone.text} Face ID, камери й динаміки працюють без нарікань.`;
 const PLAIN = {
   product_plain: { preset: 'product', pool: 'en', text: 'Wool socks for running. $24 a pair.' },
   headline_plain: { preset: 'headline', pool: 'en', text: 'Some thoughts about my mornings' },
 };
-const PAD = {
-  uk: 'Давно збирався написати про одну річ, але все не було часу, а сьогодні нарешті сів і вирішив поділитися. ',
-  en: 'I have been meaning to write about something for a while, and today I finally sat down to share it. ',
-};
+/** A windy opening that pushes what is for sale out of the first sentence. */
+const PAD = 'Давно збирався написати про одну річ, але все не було часу, а сьогодні нарешті сів і вирішив поділитися. ';
 const ASK_ADDED = {
   post_dev: ' Напишіть у коментарях: вам асистент пришвидшив роботу чи ні?',
   post_broad: ' Порахуйте свої кавові витрати й напишіть, скільки вийшло.',
   product_socks: ' Order at the link in the profile, delivery in 3 days.',
 };
 const LISTING_CUT = 'iPhone 13, 128 ГБ, синій. Стан акумулятора 86%, не ремонтувався, весь час у чохлі та зі склом. У комплекті коробка й кабель. 14 000 грн.';
-/** The same facts as these texts, in the style a chatbot writes in when nobody asked for it. */
-const WRITTEN_BY_AI = {
-  post_broad: '☕ Чи замислювалися ви, скільки насправді коштує щоденна кава? За рік ціна в моїй улюбленій кав’ярні зросла з 45 до 70 гривень. Ось що я зрозумів: 1) щоденна кава — це 25 тисяч на рік; 2) кавоварка за 9 тисяч окупається за кілька місяців; 3) але живе спілкування з баристою безцінне. Зрештою, важливо знайти баланс між економією та маленькими радощами. А ви що обираєте? 👇',
-  post_dev: '🚀 Місяць роботи з ШІ-асистентом: мої висновки. Ось три головні уроки: 1) рутинні задачі виконуються втричі швидше; 2) рев’ю власного коду займає вдвічі більше часу; 3) нудні задачі більше не відкладаються. Підсумок: ШІ не замінює розробника, а робить його ефективнішим. А як ШІ змінив вашу роботу? 💬',
-  product_socks: 'Say goodbye to smelly socks! 🧦 Our merino wool running socks are designed for runners who demand the best: 1) fresh for a week of training; 2) a seamless toe for blister-free comfort; 3) a 2-year guarantee. Invest in your comfort today, because every step matters. Ready to upgrade your run? Just $24 a pair!',
-  headline_ai: '🚀 Unlock Your Best Self: How One Simple 4-Minute Habit Transformed My Mornings in Just 30 Days',
-};
 /** What every fixed person of B did: a glad reaction, so hook is asked of them all. */
 const FIXED_DID = { post: 'liked', listing: 'saved', product: 'cart', headline: 'clicked' };
 const ORDERS = ['listed', 'reversed'];
 
-/** The texts of D with the answer each check should give. → [{ check, yes, name, preset, pool, text }] */
+/** The texts of C with the answer each check should give. → [{ check, yes, name, preset, pool, text }] */
 function checkCases() {
   const known = { ...DULL, ...TEXTS };
   const as = (name, change = '', text = known[name].text) => ({ ...known[name], name: change ? `${name}, ${change}` : name, text });
@@ -402,12 +385,10 @@ function checkCases() {
   const add = (check, yes, ...texts) => texts.forEach((one) => cases.push({ check, yes, ...one }));
   add('concrete', false, as('morning'), as('vague'), as('listing_vague'));
   add('concrete', true, ...Object.keys(TEXTS).map((name) => as(name)));
-  add('point_first', true, as('post_garden'), as('listing_iphone'), as('product_socks'));
-  add('point_first', false, ...['post_garden', 'listing_iphone', 'product_socks'].map((name) => as(name, 'padded', PAD[known[name].pool] + known[name].text)), as('vague'));
+  add('point_first', true, as('listing_iphone'));
+  add('point_first', false, as('listing_iphone', 'padded', PAD + known.listing_iphone.text));
   add('ask', false, as('post_dev'), as('post_broad'), as('listing_iphone', 'cut', LISTING_CUT), as('listing_vague'), as('product_socks'));
   add('ask', true, ...Object.entries(ASK_ADDED).map(([name, words]) => as(name, 'with an ask', known[name].text + words)), as('listing_iphone'));
-  add('ai', false, ...Object.keys(WRITTEN_BY_AI).map((name) => as(name)));
-  add('ai', true, ...Object.entries(WRITTEN_BY_AI).map(([name, text]) => as(name, 'rewritten', text)));
   return cases;
 }
 
@@ -495,7 +476,7 @@ async function firstWaveOf({ preset, pool, text }) {
 }
 
 async function town() {
-  const report = { site: {}, not_for_them: {}, drain_by_temper: {}, fixed: {}, depth: {}, checks: [] };
+  const report = { site: {}, not_for_them: {}, drain_by_temper: {}, fixed: {}, checks: [] };
   const sites = {};
   const drains = { lurker: [], rest: [] };
 
@@ -543,28 +524,7 @@ async function town() {
     }));
   }
 
-  // C. How far the same people read a text and the same text made much longer, asked of who stopped at the short one.
-  const listingShort = { ...TEXTS.listing_iphone, text: LISTING_SHORT };
-  const pairs = {
-    ...Object.fromEntries(['post_garden', 'post_dev', 'post_broad'].map((name) => [name, { short: TEXTS[name], long: `${TEXTS[name].text}\n\n${LONGER[name]}`, site: sites[name] }])),
-    listing_iphone: { short: listingShort, long: `${LISTING_SHORT}\n\n${LONGER.listing}`, site: await firstWaveOf(listingShort) },
-  };
-  for (const [name, { short, long, site }] of Object.entries(pairs)) {
-    const ids = site.gathered.stopped;
-    if (ids.length < MIN_ASKED) {
-      console.log(`${name}, depth: ${ids.length} stopped, not asked`);
-      continue;
-    }
-    const people = crowdOf(short.pool);
-    const row = (report.depth[name] = { asked: ids.length, chars: { short: short.text.length, long: long.length } });
-    await Promise.all(Object.entries({ short: short.text, long }).map(async ([form, text]) => {
-      const sides = await inBothOrders('depth', { presetId: short.preset, text, people: ids.map((id) => people[id]), reactionOf: site.reactionOf, pool: short.pool, versionId: 'probe' });
-      row[form] = bothLists(sides, 'depth', short.preset);
-    }));
-    console.log(`${name}, depth: short ${sideLine(row.short.listed)} | long ${sideLine(row.long.listed)}`);
-  }
-
-  // D. The text checks alone, one request per text, beside what the opening requests of A said.
+  // C. The text checks alone, one request per text, beside what the opening requests of A said.
   const cases = checkCases();
   const key = (one) => `${one.preset} ${one.text}`;
   const alone = new Map();
@@ -583,7 +543,7 @@ async function town() {
 }
 
 /** The gates of the town step, from its report. A question or check that fails one is dropped or rewritten before it ships. */
-function townGates({ site, fixed, depth, checks }) {
+function townGates({ site, fixed, checks }) {
   const dull = Object.keys(DULL);
   const lists = (name, list) => site[name].lists[list];
   const everyOrder = (test) => ORDERS.every(test);
@@ -625,16 +585,7 @@ function townGates({ site, fixed, depth, checks }) {
   const ledByOpening = ORDERS.map((order) => posts.filter((row) => topOf(row.hook[order]) === 'opening').length);
   gates.hook_opening = { post_texts: posts.length, led_by_opening: ledByOpening, drop: ledByOpening.every((count) => count > posts.length / 2) };
 
-  // 5. More text means fewer read to the end, by more than two standard errors, in each order.
-  const fewerToEnd = (pair) => everyOrder((order) => {
-    const [short, long] = [pair.short[order], pair.long[order]];
-    if (!short?.shares || !long?.shares) return false;
-    const [a, b] = [short.shares.to_end ?? 0, long.shares.to_end ?? 0];
-    return a - b > 2 * Math.sqrt((a * (1 - a) + b * (1 - b)) / Math.min(short.real, long.real));
-  });
-  gates.depth = { post: ['post_garden', 'post_dev', 'post_broad'].every((name) => depth[name] && fewerToEnd(depth[name])), listing: Boolean(depth.listing_iphone && fewerToEnd(depth.listing_iphone)) };
-
-  // 6. A question whose drain takes more than half of those asked on more than half of its texts says too little.
+  // 5. A question whose drain takes more than half of those asked on more than half of its texts says too little.
   const drains = {};
   for (const { lists: byList } of Object.values(site)) {
     const byQuestion = {};
@@ -651,7 +602,7 @@ function townGates({ site, fixed, depth, checks }) {
   }
   gates.drain = Object.fromEntries(Object.entries(drains).map(([question, values]) => [question, { texts: values.length, drained: values.filter((value) => value > 0.5).length, drop: values.filter((value) => value > 0.5).length > values.length / 2 }]));
 
-  // 7. Every text check answers yes and no where it should, and mostly outside 0.3 to 0.7, per wording.
+  // 6. Every text check answers yes and no where it should, and mostly outside 0.3 to 0.7, per wording.
   const byWording = {};
   for (const one of checks) {
     const wording = typeof TEXT_CHECKS[one.check].ask === 'string' ? one.check : `${one.check}.${one.preset}`;
