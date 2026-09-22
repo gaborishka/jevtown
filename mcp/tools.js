@@ -210,7 +210,7 @@ function saidOf({ result, presetId, lang }) {
   return { lists, missing: result.said.missing };
 }
 
-/** Jev's yes or no about the text itself, apart from the town. The agent is the author, so the AI one is in. */
+/** Jev's yes or no about the text itself, apart from the town. */
 function checksOf({ result, presetId, lang }) {
   const labels = DICTIONARIES[lang].checks.labels;
   return checksFor(presetId).filter(([id]) => result.checks?.[id] != null).map(([id]) => ({
@@ -495,7 +495,7 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
   const checkText = {
     name: 'check_text',
     title: 'Check a text with Jevtown',
-    description: "Shows a text to Jevtown, a town of 10,000 computed personas who speak its language (Ukrainian or English), and reports what they did: how far it travelled in waves of 600, 1,500 and 3,000 people (and everybody else with waves: 4), who stopped, who was glad and who got annoyed, why people scrolled past or got annoyed and what made the glad ones stop, and for a listing or a product what buyers would ask or pay. It also returns Jev's yes or no to a few questions about the text itself, such as whether the main point comes first. Every reaction comes from Jev, a model that answers typed questions with probabilities and writes no text, so rewriting is up to you. It is paid from the Jev key of whoever runs this server: a text that dies in the first wave costs about a cent, one that reaches 5,100 people about five cents, and a listing or product that reaches everybody up to about thirty cents. A check takes from a few seconds to under a minute; a wave is not started if the check would then not finish within the server's time limit. Reactions are drawn with a fixed seed, so the same text gives nearly the same result; that is not a measure of certainty. A post of the same text on the site will differ: it has its own seed and the residents visitors moved in.",
+    description: "Shows a text to Jevtown, a town of 10,000 computed personas who speak its language (Ukrainian or English), and reports what they did: how far it travelled in waves of 600, 1,500 and 3,000 people (and everybody else with waves: 4), who stopped, who was glad and who got annoyed, why people scrolled past or got annoyed and what made the glad ones stop, and for a listing or a product what buyers would ask or pay. It also returns Jev's yes or no to a few questions about the text itself, such as whether it has a concrete number, name or example. Every reaction comes from Jev, a model that answers typed questions with probabilities and writes no text, so rewriting is up to you. It is paid from the Jev key of whoever runs this server: a text that dies in the first wave costs about a cent, one that reaches 5,100 people about five cents, and a listing or product that reaches everybody up to about thirty cents. A check takes from a few seconds to under a minute; a wave is not started if the check would then not finish within the server's time limit. Reactions are drawn with a fixed seed, so the same text gives nearly the same result; that is not a measure of certainty. A post of the same text on the site will differ: it has its own seed and the residents visitors moved in.",
     inputSchema: {
       type: 'object',
       properties: {

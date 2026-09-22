@@ -196,8 +196,8 @@ test('check_text returns what the post page would, in the shape it declares', as
   assert.deepEqual([scrolled.question, scrolled.lead, scrolled.answers[0].text, scrolled.wrongAudience], ['why', { kind: 'one', ids: ['not_for_them'] }, 'not for them', 0.67]);
   assert.ok(!scrolled.answers.some((answer) => answer.id === 'cant_tell') && Math.abs(scrolled.drain - 0.1) < 0.01);
   assert.match(textOf(answer), /\nThe reason given most often for scrolling past: not for them\.\n/);
-  assert.deepEqual(report.checks.map((check) => [check.id, check.reading]), [['point_first', 'no'], ['ask', 'no'], ['concrete', 'no'], ['ai', 'no']]);
-  assert.match(textOf(answer), /\nHow Jev reads the text: the main point is in the first sentence: no; .+; reads as written by AI: no\.\n/);
+  assert.deepEqual(report.checks.map((check) => [check.id, check.reading]), [['ask', 'no'], ['concrete', 'no']]);
+  assert.match(textOf(answer), /\nHow Jev reads the text: clear what readers should do: no; has a concrete number, name or example: no\.\n/);
 
   const inUkrainian = structured(await client.call('check_text', { text: 'tomatoes', pool: 'uk', lang: 'uk' }));
   assert.equal(inUkrainian.groups.stopped.top[0].label, 'цікавляться: садівництво');
