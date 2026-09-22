@@ -66,7 +66,7 @@ export function mergeSaid(parts, missing = {}) {
 }
 
 /**
- * runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves, onWave, blocking, mayGoOn, mayFollowUp }) → the finished check,
+ * runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves, onWave, blocking, mayGoOn, mayFollowUp, mayAsk }) → the finished check,
  * with `said` (what the people asked at the end answered, as mergeSaid gives it) and `checks`, `unlisted`
  * and `blocked` from the opening request, acted upon only with `blocking`.
  * send(request) → { answers, tokens, usd } is `ask` bound to a provider. onWave(wave, reactions) is called
@@ -77,8 +77,10 @@ export function mergeSaid(parts, missing = {}) {
  * clock or a budget of its own.
  * mayFollowUp(waves): called before a preset's follow-up question; false skips it and leaves followUp
  * null, for a caller that finds the waves too poorly answered to be worth it.
+ * mayAsk(waves): called before the closing questions; false skips them and leaves `said` empty, for
+ * the same reason.
  */
-export async function runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves = WAVES.length, onWave, blocking = false, mayGoOn, mayFollowUp }) {
+export async function runCheck({ send, presetId, pool, text, versionId, prices, currency, maxWaves = WAVES.length, onWave, blocking = false, mayGoOn, mayFollowUp, mayAsk }) {
   const preset = PRESETS[presetId];
   if (!preset) throw new Error(`unknown preset: ${presetId}`);
   const people = crowd(pool);
@@ -152,7 +154,8 @@ export async function runCheck({ send, presetId, pool, text, versionId, prices, 
 
   const parts = [];
   const missing = {};
-  await Promise.all(asking(presetId, text, gathered).map(({ question, ids }) => askQuestion(paid, question, { presetId, text, people: ids.map((id) => people[id]), reactionOf, pool, versionId })
+  const closing = mayAsk?.(waves) === false ? [] : asking(presetId, text, gathered);
+  await Promise.all(closing.map(({ question, ids }) => askQuestion(paid, question, { presetId, text, people: ids.map((id) => people[id]), reactionOf, pool, versionId })
     .then(({ part }) => parts.push(part), (error) => {
       if (error.fatal || error.code === 'no_key') throw error;
       spent.failed += 1;

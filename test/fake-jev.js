@@ -5,9 +5,10 @@
 //   "glad 0.30"       everybody is glad with that probability and scrolls past otherwise
 //   "insult"          the moderation question about insults answers 0.95, so the site would refuse it
 //   "rude"            the same question answers 0.6: the text would stay out of the public feed
-// A listing's buyers ask about the price first; a product's shoppers pay up to the second price.
+// A listing's buyers ask about the price first; a product's shoppers pay up to the second price. Asked
+// at the end, people give the first answer offered, then the second, and a tenth of it goes to the drain.
 // It counts calls and requests in flight; delay, failures, dollars and tokens can be set.
-import { PRESETS } from '../public/shared/presets.js';
+import { PRESETS, ASKS, CANT_TELL } from '../public/shared/presets.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -43,8 +44,11 @@ export const kindOf = ({ questions }) => {
   const first = Object.values(questions)[0];
   if (first.type === 'score') return 'opening';
   if ('negotiable' in first.criteria || 'p0' in first.criteria) return 'follow-up';
+  if (closing(first)) return 'closing';
   return 'wave';
 };
+
+const closing = (question) => Object.values(ASKS).some(({ ask }) => question.instructions.endsWith(ask));
 
 function answer({ state, questions }) {
   const presetId = Object.keys(PRESETS).find((id) => PRESETS[id].noun in state);
@@ -61,6 +65,10 @@ function answer({ state, questions }) {
     else if (question.type === 'noul') answers[id] = { noul: id === 'unlisted:insult' ? (text.includes('insult') ? 0.95 : text.includes('rude') ? 0.6 : 0.02) : 0.02 };
     else if ('negotiable' in question.criteria) answers[id] = { probabilities: { negotiable: 0.6, photos: 0.4 } };
     else if ('p0' in question.criteria) answers[id] = { probabilities: { p0: 0.2, p1: 0.3, p2: 0.5 } };
+    else if (closing(question)) {
+      const [first, second] = Object.keys(question.criteria).filter((answer) => answer !== CANT_TELL);
+      answers[id] = { probabilities: second ? { [first]: 0.6, [second]: 0.3, [CANT_TELL]: 0.1 } : { [first]: 0.9, [CANT_TELL]: 0.1 } };
+    }
     else if (share >= 0) answers[id] = { probabilities: { [glad]: share, scrolled_past: 1 - share } };
     else if (text.includes('coffee')) answers[id] = { probabilities: { [glad]: 0.5, [looked]: 0.3, scrolled_past: 0.2 } };
     else if (text.includes('tomatoes') && /into [^;]*gardening/.test(question.instructions)) answers[id] = { probabilities: { [glad]: 0.8, [looked]: 0.2 } };

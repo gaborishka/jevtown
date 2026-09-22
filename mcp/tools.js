@@ -4,11 +4,11 @@
 // the server. This file knows nothing about JSON-RPC; mcp/protocol.js carries the tools.
 import { createHash } from 'node:crypto';
 import { runCheck, AT_ONCE, PER_REQUEST } from '../public/shared/check.js';
-import { PRESETS, priceLadder } from '../public/shared/presets.js';
-import { MAX_TEXT_CHARS } from '../public/shared/requests.js';
+import { PRESETS, ASKS, LISTS, priceLadder, asksFor, questionOfList } from '../public/shared/presets.js';
+import { MAX_TEXT_CHARS, checksFor } from '../public/shared/requests.js';
 import { WAVES } from '../public/shared/feed.js';
 import { crowd, poolFor, CROWD } from '../public/shared/personas.js';
-import { counters, segments, topSegments, biggestSegments, rankedAnswers, demandCurve } from '../public/shared/summary.js';
+import { counters, segments, topSegments, biggestSegments, mostAnnoyed, rankedAnswers, demandCurve, listView, whySplit, readCheck } from '../public/shared/summary.js';
 import { TYPESAFE_USD_PER_TOKEN, PROVIDERS } from '../public/shared/jev.js';
 import { DICTIONARIES } from '../public/i18n.js';
 import { groupLabel, verdictOf, summary, compareSummary, startOf } from './words.js';
@@ -40,7 +40,7 @@ const TOP_IN_ROW = 3;
 const LANGS = ['en', 'uk'];
 const POOLS = ['uk', 'en'];
 
-export const INSTRUCTIONS = 'Jevtown reads texts; it does not write them. Write variants yourself, compare them with compare_texts (first waves only, about a cent each), then follow the best one with check_text. Every call spends money on the Jev key of whoever runs this server, and the server runs one call at a time.';
+export const INSTRUCTIONS = 'Jevtown reads texts; it does not write them. Write variants yourself, compare them with compare_texts (first waves only, about a cent each), then follow the best one with check_text. Each check also asks up to 100 of the people why they scrolled past or got annoyed, and what made the glad ones stop: "not for them" means the text reached people it is not for, the other reasons point at the text itself, and what made people stop is worth keeping. Every call spends money on the Jev key of whoever runs this server, and the server runs one call at a time.';
 
 const KEY_NAMES = Object.values(PROVIDERS).map((provider) => provider.keyName);
 
@@ -50,8 +50,8 @@ const isFatal = (error) => Boolean(error?.fatal || error?.code === 'no_key');
 const round = (value, digits = 2) => Number(value.toFixed(digits)) || 0;
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-/** The most requests a check can make: the opening one, every wave full, and a follow-up question for everybody reached. */
-function worstRequests(presetId, maxWaves) {
+/** The most requests a check can make: the opening one, every wave full, a follow-up question for everybody reached, and the closing questions. */
+function worstRequests(presetId, maxWaves, text) {
   let reach = 0;
   let requests = 1;
   for (const wave of WAVES.slice(0, maxWaves)) {
@@ -60,7 +60,7 @@ function worstRequests(presetId, maxWaves) {
     requests += Math.ceil(people / PER_REQUEST);
   }
   if (PRESETS[presetId].followUp) requests += Math.ceil(reach / PER_REQUEST);
-  return requests;
+  return requests + asksFor(presetId, text).length;
 }
 
 // Arguments are checked by the rules the inputSchema states, and refused rather than rewritten.
@@ -150,6 +150,10 @@ const STEP = object({ price: number, buyers: integer, revenue: number });
 const GROUPS = object({ everybody: number, standsOut: boolean, top: array(object({ ...GROUP, share: number, people: integer, size: integer, lift: number })) });
 const COST = object({ requests: integer, cached: integer, failedBatches: integer, tokens: integer, usd: number, seconds: number });
 const BUDGET = object({ day: string, spentUsd: number, limitUsd: nullable(number) });
+const CHECK = object({ id: string, text: string, value: number, reading: { type: 'string', enum: ['yes', 'no', 'unclear'] } });
+const LEAD = object({ kind: { type: 'string', enum: ['one', 'equal', 'none'] }, ids: array(string) });
+const LIST = object({ list: { type: 'string', enum: LISTS }, question: { type: 'string', enum: Object.keys(ASKS) }, asked: integer, drain: number, answers: array(QUESTION), lead: LEAD, wrongAudience: nullable(number) });
+const ANNOYED = object({ ...GROUP, share: number, people: integer, reached: integer });
 const ABOUT = { preset: { type: 'string', enum: PRESET_IDS }, pool: { type: 'string', enum: POOLS }, lang: { type: 'string', enum: LANGS } };
 
 /**
@@ -184,6 +188,40 @@ function demandOf({ result, prices, currency }) {
   const curve = demandCurve({ ...result.followUp, answers: priceLadder(prices, currency) }, prices);
   const best = curve.reduce((a, b) => (b.revenue > a.revenue ? b : a));
   return { currency, prices: curve, best: best.revenue > 0 ? best : null };
+}
+
+/**
+ * What the people asked at the end said, list by list, as the post page shows it: every real answer
+ * with its share, and which lead by the tie rule of summary.js:leaders. A list with fewer than ten
+ * answers is left out, and so is the hidden answer; `drain` is its share of the people asked.
+ */
+function saidOf({ result, presetId, lang }) {
+  if (!result.said || result.blocked.length) return null;
+  const labels = DICTIONARIES[lang].said.labels;
+  const lists = LISTS.map((list) => [list, listView(result.said, list, presetId)]).filter(([, view]) => view).map(([list, view]) => {
+    const question = questionOfList(list);
+    return {
+      list, question, asked: view.asked, drain: round(view.drain), lead: view.lead,
+      answers: view.rows.map(({ id, share }) => ({ id, text: labels[question][id] ?? id, share: round(share) })),
+      // Of those who scrolled past, the share whose reason was the reader, not the text.
+      wrongAudience: list === 'scrolled' ? round(whySplit(view).readers) : null,
+    };
+  });
+  return { lists, missing: result.said.missing };
+}
+
+/** Jev's yes or no about the text itself, apart from the town. The agent is the author, so the AI one is in. */
+function checksOf({ result, presetId, lang }) {
+  const labels = DICTIONARIES[lang].checks.labels;
+  return checksFor(presetId).filter(([id]) => result.checks?.[id] != null).map(([id]) => ({
+    id, text: typeof labels[id] === 'string' ? labels[id] : labels[id][presetId], value: result.checks[id], reading: readCheck(result.checks[id]),
+  }));
+}
+
+/** The group most often annoyed among those the text reached, as the Got annoyed tab names it. */
+function annoyedOf({ all, totals, presetId, lang }) {
+  const group = mostAnnoyed(all, totals, presetId);
+  return group ? { group: `${group.attribute}:${group.value}`, label: groupLabel(lang, group.attribute, group.value), share: round(group.sorry / group.reached), people: group.sorry, reached: group.reached } : null;
 }
 
 const costOf = ({ tally, seconds }) => ({ requests: tally.requests, cached: tally.cached, failedBatches: tally.failed, tokens: tally.tokens, usd: round(tally.usd, 6), seconds: round(seconds, 1) });
@@ -222,6 +260,10 @@ const CHECK_SECTIONS = [
     }),
   },
   {
+    properties: { said: nullable(object({ lists: array(LIST), missing: { type: 'object' } })), checks: array(CHECK), mostAnnoyed: nullable(ANNOYED) },
+    fields: (context) => ({ said: saidOf(context), checks: checksOf(context), mostAnnoyed: context.result.blocked.length ? null : annoyedOf(context) }),
+  },
+  {
     properties: { cost: COST, budget: BUDGET },
     fields: (context) => ({ cost: costOf(context), budget: context.budget() }),
   },
@@ -246,11 +288,18 @@ const ROW_SECTIONS = [
     }),
   },
   {
-    properties: { shownTo: nullable(SCORE), mostAnnoyed: nullable(object({ ...GROUP, share: number })) },
+    properties: { shownTo: nullable(SCORE), mostAnnoyed: nullable(ANNOYED), mainReason: nullable(object({ ...LEAD.properties, texts: array(string) })), wrongAudience: nullable(number), checks: array(CHECK) },
     fields: (context) => {
-      if (!context.result) return { shownTo: null, mostAnnoyed: null };
-      const annoyed = context.wave && context.totals.sorry >= 10 ? topSegments(context.all, 'sorry', 1)[0] : null;
-      return { shownTo: shownTo(context, TOP_IN_ROW), mostAnnoyed: annoyed ? { group: `${annoyed.attribute}:${annoyed.value}`, label: groupLabel(context.lang, annoyed.attribute, annoyed.value), share: round(annoyed.sorry / annoyed.size) } : null };
+      if (!context.result) return { shownTo: null, mostAnnoyed: null, mainReason: null, wrongAudience: null, checks: [] };
+      const scrolled = context.wave && saidOf(context)?.lists.find((list) => list.list === 'scrolled');
+      const lead = scrolled?.lead;
+      return {
+        shownTo: shownTo(context, TOP_IN_ROW),
+        mostAnnoyed: context.wave ? annoyedOf(context) : null,
+        mainReason: lead ? { ...lead, texts: lead.ids.map((id) => scrolled.answers.find((answer) => answer.id === id).text) } : null,
+        wrongAudience: scrolled ? scrolled.wrongAudience : null,
+        checks: checksOf(context),
+      };
     },
   },
   {
@@ -278,7 +327,7 @@ function marginOf(totals, size) {
 }
 
 const incomplete = (wave) => wave.size < ENOUGH_ANSWERED * wave.asked;
-/** A listing's or a product's follow-up question is asked only after waves Jev answered enough of: otherwise it is money spent on a check that says nothing. */
+/** A listing's or a product's follow-up question, and the closing questions, are asked only after waves Jev answered enough of: otherwise it is money spent on a check that says nothing. */
 const worthFollowingUp = (waves) => !waves.some(incomplete);
 
 /**
@@ -446,7 +495,7 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
   const checkText = {
     name: 'check_text',
     title: 'Check a text with Jevtown',
-    description: "Shows a text to Jevtown, a town of 10,000 computed personas who speak its language (Ukrainian or English), and reports what they did: how far it travelled in waves of 600, 1,500 and 3,000 people (and everybody else with waves: 4), who stopped, who was glad and who got annoyed, and for a listing or a product what buyers would ask or pay. Every reaction comes from Jev, a model that answers typed questions with probabilities and writes no text, so rewriting is up to you. It is paid from the Jev key of whoever runs this server: a text that dies in the first wave costs under a cent, one that reaches 5,100 people about five cents, and a listing or product that reaches everybody up to about thirty cents. A check takes from a few seconds to under a minute; a wave is not started if the check would then not finish within the server's time limit. Reactions are drawn with a fixed seed, so the same text gives nearly the same result; that is not a measure of certainty. A post of the same text on the site will differ: it has its own seed and the residents visitors moved in.",
+    description: "Shows a text to Jevtown, a town of 10,000 computed personas who speak its language (Ukrainian or English), and reports what they did: how far it travelled in waves of 600, 1,500 and 3,000 people (and everybody else with waves: 4), who stopped, who was glad and who got annoyed, why people scrolled past or got annoyed and what made the glad ones stop, and for a listing or a product what buyers would ask or pay. It also returns Jev's yes or no to a few questions about the text itself, such as whether the main point comes first. Every reaction comes from Jev, a model that answers typed questions with probabilities and writes no text, so rewriting is up to you. It is paid from the Jev key of whoever runs this server: a text that dies in the first wave costs about a cent, one that reaches 5,100 people about five cents, and a listing or product that reaches everybody up to about thirty cents. A check takes from a few seconds to under a minute; a wave is not started if the check would then not finish within the server's time limit. Reactions are drawn with a fixed seed, so the same text gives nearly the same result; that is not a measure of certainty. A post of the same text on the site will differ: it has its own seed and the residents visitors moved in.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -463,10 +512,12 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
     async run(raw, { signal, progress } = {}) {
       refuseIfBusy();
       const { text, presetId, pool, prices, currency, maxWaves, lang } = checkArgs(raw);
-      const total = worstRequests(presetId, maxWaves);
+      const total = worstRequests(presetId, maxWaves, text);
       guard(total);
       const keys = Object.keys(PRESETS[presetId].reactions);
       const followsUp = Boolean(PRESETS[presetId].followUp);
+      // The closing questions go out together, so they take about as long as one request does among AT_ONCE.
+      const closing = asksFor(presetId, text).length ? AT_ONCE * PER_REQUEST : 0;
       const startedAt = now();
       const elapsed = () => (now() - startedAt) / 1000;
       let firstWave = null;
@@ -483,7 +534,7 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
         const result = await runCheck({
           // The first wave begins once the opening request has its answer.
           send: (request) => job.send(request).finally(() => (waveFrom ??= mark())),
-          presetId, pool, text, versionId: SEED, prices, currency, maxWaves, opening: true,
+          presetId, pool, text, versionId: SEED, prices, currency, maxWaves, blocking: true,
           onWave: (wave, reactions) => {
             reached = counters(presetId, keys, reactions);
             if (wave.index === 0) firstWave = reached;
@@ -495,17 +546,18 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
           },
           // The next wave starts only if Jev answered enough of this one, and if the check is expected to end
           // within the limit with it: the wave at the pace so far, then for a listing or a product the follow-up
-          // question, asked of the same share of everybody reached as has stopped so far.
+          // question, asked of the same share of everybody reached as has stopped so far, then the closing questions.
           mayGoOn: (wave) => {
             if (incomplete(wave)) return false;
             if (wave.index + 1 >= maxWaves || !maxSeconds) return true;
             const next = Math.min(WAVES[wave.index + 1].size, CROWD - reached.reach);
             const followUp = followsUp ? (reached.stopped / Math.max(1, reached.reach)) * (reached.reach + next) : 0;
             const perSecond = pace.people ? pace.people / pace.seconds : SLOWEST_PER_SECOND;
-            outOfTime = elapsed() + (next + followUp) / perSecond > maxSeconds;
+            outOfTime = elapsed() + (next + followUp + closing) / perSecond > maxSeconds;
             return !outOfTime;
           },
           mayFollowUp: worthFollowingUp,
+          mayAsk: worthFollowingUp,
         });
         const incompleteAt = result.waves.findIndex(incomplete);
         const last = result.waves.at(-1);
@@ -532,7 +584,7 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
   const compareTexts = {
     name: 'compare_texts',
     title: 'Compare variants with Jevtown',
-    description: "Shows two to five variants of one text to Jevtown's first wave: for each variant, the 500 people Jev thinks it is for plus 100 random ones, so variants may meet different people. Ranks them by the town's rule: first whether the first wave sent the variant on (glad minus sorry at least 0.1 of the wave), then by the glad minus sorry that wave has on average. Variants closer than the draw can move them are marked as too close to call. Use it to choose between variants you wrote, then run check_text on the best one. It costs about a cent per variant, up to two for a listing, on the key of whoever runs this server, and takes about 10 to 20 seconds for five.",
+    description: "Shows two to five variants of one text to Jevtown's first wave: for each variant, the 500 people Jev thinks it is for plus 100 random ones, so variants may meet different people. Each row carries the main reason people scrolled past. Ranks them by the town's rule: first whether the first wave sent the variant on (glad minus sorry at least 0.1 of the wave), then by the glad minus sorry that wave has on average. Variants closer than the draw can move them are marked as too close to call. Use it to choose between variants you wrote, then run check_text on the best one. It costs about a cent per variant, up to two for a listing, on the key of whoever runs this server, and takes about 10 to 20 seconds for five.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -548,7 +600,7 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
     async run(raw, { signal, progress } = {}) {
       refuseIfBusy();
       const { texts, presetId, pool, prices, currency, lang } = compareArgs(raw);
-      const total = texts.length * worstRequests(presetId, 1);
+      const total = texts.reduce((sum, text) => sum + worstRequests(presetId, 1, text), 0);
       guard(total);
       const keys = Object.keys(PRESETS[presetId].reactions);
       const startedAt = now();
@@ -558,12 +610,13 @@ export function createTools({ send, budgetUsd = 1, maxSeconds = 45, envFile, now
       try {
         // The variants run side by side and share the slots, so five take little longer than one.
         const settled = await Promise.allSettled(texts.map((text, index) => runCheck({
-          send: job.send, presetId, pool, text, versionId: SEED, prices, currency, maxWaves: 1, opening: true,
+          send: job.send, presetId, pool, text, versionId: SEED, prices, currency, maxWaves: 1, blocking: true,
           onWave: (wave, reactions) => {
             firstWaves[index] = counters(presetId, keys, reactions);
             job.message = `variant ${index + 1}, ${waveLine(wave)}`;
           },
           mayFollowUp: worthFollowingUp,
+          mayAsk: worthFollowingUp,
         })));
         const errors = settled.filter((outcome) => outcome.status === 'rejected').map((outcome) => outcome.reason);
         // A fatal answer ends the whole call, and so does a bug of this server, which must not pass for Jev's failure in a row.

@@ -175,7 +175,7 @@ test('check_text returns what the post page would, in the shape it declares', as
   assert.equal(report.cost.requests, client.fake.calls);
   assert.equal(report.cost.cached, 0);
 
-  const direct = await runCheck({ send: createFakeJev().send, presetId: 'post', pool: 'uk', text: 'tomatoes', versionId: 'mcp', maxWaves: 3, opening: true });
+  const direct = await runCheck({ send: createFakeJev().send, presetId: 'post', pool: 'uk', text: 'tomatoes', versionId: 'mcp', maxWaves: 3, blocking: true });
   assert.deepEqual(report.counters, counters('post', direct.keys, direct.reactions));
   assert.equal(report.waves.length, direct.waves.length);
   assert.equal(report.status, 'stopped');
@@ -190,6 +190,14 @@ test('check_text returns what the post page would, in the shape it declares', as
   assert.ok(top.lift > 1.3 && report.groups.stopped.standsOut);
   assert.equal(report.groups.sorry, null);
   assert.deepEqual([report.questions, report.demand, report.unlisted, report.blocked], [null, null, [], []]);
+  // What the people asked at the end said, and Jev's reading of the text, as the post page shows them.
+  assert.deepEqual(report.said.lists.map((list) => list.list), ['scrolled', 'hook', 'comment']);
+  const scrolled = report.said.lists[0];
+  assert.deepEqual([scrolled.question, scrolled.lead, scrolled.answers[0].text, scrolled.wrongAudience], ['why', { kind: 'one', ids: ['not_for_them'] }, 'not for them', 0.67]);
+  assert.ok(!scrolled.answers.some((answer) => answer.id === 'cant_tell') && Math.abs(scrolled.drain - 0.1) < 0.01);
+  assert.match(textOf(answer), /\nThe reason given most often for scrolling past: not for them\.\n/);
+  assert.deepEqual(report.checks.map((check) => [check.id, check.reading]), [['point_first', 'no'], ['ask', 'no'], ['concrete', 'no'], ['ai', 'no']]);
+  assert.match(textOf(answer), /\nHow Jev reads the text: the main point is in the first sentence: no; .+; reads as written by AI: no\.\n/);
 
   const inUkrainian = structured(await client.call('check_text', { text: 'tomatoes', pool: 'uk', lang: 'uk' }));
   assert.equal(inUkrainian.groups.stopped.top[0].label, 'цікавляться: садівництво');
@@ -250,7 +258,7 @@ test('the site\'s moderation comes at no extra request', async () => {
   const client = connect();
   const answer = await client.call('check_text', { text: 'insult' });
   const report = structured(answer);
-  assert.deepEqual([report.status, report.blocked, report.reach, report.waves, report.groups], ['blocked', ['insult'], 0, [], null]);
+  assert.deepEqual([report.status, report.blocked, report.reach, report.waves, report.groups, report.said, report.mostAnnoyed], ['blocked', ['insult'], 0, [], null, null, null]);
   assert.equal(client.fake.calls, 1);
   assert.equal(report.verdict, 'The site would not post this text: insults. The town did not read it.');
 
@@ -270,7 +278,11 @@ test('compare_texts ranks the variants by the town\'s rule', async () => {
   assert.deepEqual(JSON.parse(answer.result.content[1].text), report);
   assert.deepEqual(report.ranking, [1, 0]);
   assert.deepEqual(report.rows.map((row) => [row.status, row.travels]), [['stops', false], ['travels', true]]);
-  assert.equal(client.fake.calls, 2 * (1 + 6));
+  // The opening request and six batches each, then the closing questions: why alone for meh, which nobody
+  // stopped at, and why, hook and comment for tomatoes.
+  assert.equal(client.fake.calls, 2 * (1 + 6) + 1 + 3);
+  assert.deepEqual(report.rows[1].mainReason, { kind: 'one', ids: ['not_for_them'], texts: ['not for them'] });
+  assert.match(textOf(answer), /\n2\. "tomatoes": travels on, mood \+0\.\d\d \(±0\.\d\d\), main reason for scrolling past: not for them\n/);
   assert.equal(report.rows[1].shownTo.length, 3);
   assert.match(textOf(answer), /^Variant 2 ranks first: glad minus sorry in its first wave is \+0\.\d\d on average, and it travels on\./);
 
@@ -312,24 +324,26 @@ test('the budget refuses before sending and counts what was answered', async () 
   const tight = connect({ budgetUsd: 0.05 });
   const refused = await tight.call('check_text', { text: 'tomatoes' });
   assert.equal(refused.result.isError, true);
-  assert.match(textOf(refused), new RegExp(`could cost up to \\$${(52 * WORST_USD_PER_REQUEST).toFixed(2)} \\(52 requests to Jev\\).+\\$0\\.05 left of its \\$0\\.05 for today.+Nothing was sent`));
+  // Three waves, and why, hook and comment at the end.
+  assert.match(textOf(refused), new RegExp(`could cost up to \\$${(55 * WORST_USD_PER_REQUEST).toFixed(2)} \\(55 requests to Jev\\).+\\$0\\.05 left of its \\$0\\.05 for today.+Nothing was sent`));
   assert.equal(tight.fake.calls, 0);
   assert.equal((await tight.call('check_text', { text: 'tomatoes', waves: 1 })).result.isError, false);
-  assert.equal(tight.fake.calls, 7);
+  assert.equal(tight.fake.calls, 10);
 
   const byTokens = structured(await connect({ fake: createFakeJev({ usd: 0, tokens: 1000 }) }).call('check_text', { text: 'meh', waves: 1 }));
-  assert.equal(byTokens.cost.usd, Number((7 * 1000 * TYPESAFE_USD_PER_TOKEN).toFixed(6)));
+  // Nobody stopped at meh: of the closing questions, only why is asked.
+  assert.equal(byTokens.cost.usd, Number((8 * 1000 * TYPESAFE_USD_PER_TOKEN).toFixed(6)));
 
   let now = NOON;
   const silent = connect({ fake: createFakeJev({ usd: 0, tokens: 0 }), budgetUsd: 0.03, now: () => now });
   const first = structured(await silent.call('check_text', { text: 'meh', waves: 1 }));
-  assert.equal(first.cost.usd, Number((7 * WORST_USD_PER_REQUEST).toFixed(6)));
-  assert.deepEqual(first.budget, { day: '2026-09-22', spentUsd: 0.0175, limitUsd: 0.03 });
+  assert.equal(first.cost.usd, Number((8 * WORST_USD_PER_REQUEST).toFixed(6)));
+  assert.deepEqual(first.budget, { day: '2026-09-22', spentUsd: 0.02, limitUsd: 0.03 });
   const second = await silent.call('check_text', { text: 'tea', waves: 1 });
   assert.match(textOf(second), /\$0\.01 left of its \$0\.03/);
   now += 24 * 3600 * 1000;
   const nextDay = structured(await silent.call('check_text', { text: 'tea', waves: 1 }));
-  assert.deepEqual(nextDay.budget, { day: '2026-09-23', spentUsd: 0.0175, limitUsd: 0.03 });
+  assert.deepEqual(nextDay.budget, { day: '2026-09-23', spentUsd: 0.02, limitUsd: 0.03 });
 });
 
 test('one call at a time, and at most AT_ONCE requests in flight', async () => {
@@ -384,8 +398,8 @@ test('progress only grows, and only for a client that asked for it', async () =>
   const client = connect();
   await client.call('check_text', { text: 'coffee', waves: 2 }, { progressToken: 'p1' });
   const notes = client.messages.filter((message) => message.method === 'notifications/progress');
-  assert.equal(notes.length, 1 + 6 + 15);
-  assert.ok(notes.every((note) => note.params.progressToken === 'p1' && note.params.total === 22 && note.params.progress <= 22));
+  assert.equal(notes.length, 1 + 6 + 15 + 3);
+  assert.ok(notes.every((note) => note.params.progressToken === 'p1' && note.params.total === 25 && note.params.progress <= 25));
   assert.ok(notes.every((note, index) => index === 0 || note.params.progress > notes[index - 1].params.progress));
   assert.ok(notes.some((note) => /^wave 1: 600 people, mood 0\.\d\d → travels further$/.test(note.params.message)));
 
@@ -414,7 +428,8 @@ test('the time limit stops before the wave that would not fit', async () => {
   const warm = connect({ fake: createFakeJev({ onSend: () => (later += 500) }), now: () => later, maxSeconds: 45 });
   await warm.call('compare_texts', { texts: ['coffee', 'meh'] });
   const followed = structured(await warm.call('check_text', { text: 'coffee', waves: 4 }));
-  assert.deepEqual([followed.waves.length, followed.status, followed.cost.cached], [3, 'cut_by_time', 7]);
+  // The first wave and the closing questions: those go to the first 100 of each group in pick order, all of them from the first wave.
+  assert.deepEqual([followed.waves.length, followed.status, followed.cost.cached], [3, 'cut_by_time', 10]);
   assert.ok(followed.cost.seconds <= 45, `${followed.cost.seconds} s`);
   const unlimited = structured(await connect({ fake: createFakeJev(), maxSeconds: 0 }).call('check_text', { text: 'coffee', waves: 4 }));
   assert.deepEqual([unlimited.waves.length, unlimited.status, unlimited.reach], [4, 'everyone', 10000]);
@@ -430,20 +445,24 @@ test('a repeated request is answered from memory', async () => {
   assert.equal(client.fake.calls, sent);
   assert.equal(structured(again).cost.cached, structured(again).cost.requests);
   assert.deepEqual(structured(again).counters, first.counters);
-  assert.match(textOf(again), /Cost: 7 requests to Jev \(7 from this server's memory\), \$0\.0000/);
+  assert.match(textOf(again), /Cost: 10 requests to Jev \(10 from this server's memory\), \$0\.0000/);
 
   const twice = connect();
   const report = structured(await twice.call('compare_texts', { texts: ['coffee', 'coffee'] }));
-  assert.equal(twice.fake.calls, 7);
-  assert.deepEqual([report.cost.requests, report.cost.cached], [14, 7]);
+  assert.equal(twice.fake.calls, 10);
+  assert.deepEqual([report.cost.requests, report.cost.cached], [20, 10]);
 
   // A failure is not kept: the batch that failed goes to Jev again, and only that one.
   let failed = false;
   const flaky = connect({ fake: createFakeJev({ fail: (request) => kindOf(request) === 'wave' && !failed && (failed = true) }) });
   assert.equal(structured(await flaky.call('check_text', { text: 'tomatoes', waves: 1 })).cost.failedBatches, 1);
-  const before = flaky.fake.calls;
+  const before = flaky.fake.requests.length;
   const retried = structured(await flaky.call('check_text', { text: 'tomatoes', waves: 1 }));
-  assert.deepEqual([flaky.fake.calls - before, retried.cost.failedBatches, retried.cost.cached], [1, 0, 6]);
+  const resent = flaky.fake.requests.slice(before);
+  assert.deepEqual([resent.filter((request) => kindOf(request) === 'wave').length, retried.cost.failedBatches], [1, 0]);
+  // The closing questions go to the first people of each group, who now include the failed batch's: those are new requests.
+  assert.equal(retried.cost.requests - retried.cost.cached, resent.length);
+  assert.ok(resent.every((request) => ['wave', 'closing'].includes(kindOf(request))));
 });
 
 test('no key is a tool error that says where the key goes', async () => {
@@ -455,18 +474,22 @@ test('no key is a tool error that says where the key goes', async () => {
   }
 });
 
-test('the engine reports what the MCP server needs, and old callers see no change', async () => {
+test('the engine reports what the MCP server needs, and its other callers see no change', async () => {
   assert.equal(expectedTone('post', { liked: 0.5, blocked: 0.2, read: 0.3 }), 0.3);
   assert.equal(expectedTone('post', { liked: CONFIDENT_FROM - 0.01, blocked: 0.3, read: 0.3 }), 0);
   assert.equal(expectedTone('post', {}), 0);
 
   const fake = createFakeJev();
   const plain = await runCheck({ send: fake.send, presetId: 'post', pool: 'en', text: 'glad 0.4', versionId: 'v1', maxWaves: 2 });
-  assert.ok(!('unlisted' in plain) && !('blocked' in plain));
   assert.equal(kindOf(fake.requests[0]), 'opening');
-  assert.ok(!Object.keys(fake.requests[0].questions).some((id) => id.startsWith('unlisted:')));
   assert.deepEqual(plain.waves.map((wave) => [wave.asked, wave.size]), [[600, 600], [1500, 1500]]);
   assert.ok(Math.abs(plain.waves[0].expectedMood - 0.4) < 1e-9);
+
+  // Without blocking, a text the site would refuse is still read, as npm run check reports it; with it, nobody reads it.
+  const reported = await runCheck({ send: fake.send, presetId: 'post', pool: 'en', text: 'insult', versionId: 'v1', maxWaves: 1 });
+  assert.deepEqual([reported.blocked, reported.waves.length], [['insult'], 1]);
+  const refused = await runCheck({ send: createFakeJev().send, presetId: 'post', pool: 'en', text: 'insult', versionId: 'v1', blocking: true });
+  assert.deepEqual([refused.blocked, refused.waves.length, refused.requests, refused.said.lists], [['insult'], 0, 1, {}]);
 
   const seen = [];
   const stoppedEarly = await runCheck({ send: fake.send, presetId: 'post', pool: 'en', text: 'glad 0.4', versionId: 'v1', mayGoOn: (wave) => (seen.push(wave.index), false) });
@@ -476,6 +499,11 @@ test('the engine reports what the MCP server needs, and old callers see no chang
   const noQuestion = await runCheck({ send: listing.send, presetId: 'listing', pool: 'en', text: 'coffee grinder', versionId: 'v1', maxWaves: 1, mayFollowUp: (waves) => (seen.push(waves.length), false) });
   assert.deepEqual([noQuestion.followUp, seen.at(-1)], [null, 1]);
   assert.ok(!listing.requests.some((request) => kindOf(request) === 'follow-up'));
+
+  const quiet = createFakeJev();
+  const nobodyAsked = await runCheck({ send: quiet.send, presetId: 'post', pool: 'en', text: 'tomatoes', versionId: 'v1', maxWaves: 1, mayAsk: (waves) => (seen.push(waves.length), false) });
+  assert.deepEqual([nobodyAsked.said.lists, seen.at(-1)], [{}, 1]);
+  assert.ok(!quiet.requests.some((request) => kindOf(request) === 'closing'));
 });
 
 test('over stdio, stdout carries MCP messages and nothing else', async (t) => {

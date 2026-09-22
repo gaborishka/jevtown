@@ -50,6 +50,7 @@ const WORDS = {
     tooClose: (variants) => `Variants ${listOf(variants, 'and')} are too close to call: their first-wave moods differ by less than the draw can move them.`,
     noneRanked: 'No variant could be ranked.',
     row: (variant, start, goesOn, mood, margin) => `${variant}. "${start}": ${goesOn ? 'travels on' : 'stops'}, mood ${signed(mood)} (±${margin.toFixed(2)})`,
+    reason: (reasons) => `, main reason for scrolling past: ${reasons}`,
     rowBlocked: (variant, start, reasons) => `${variant}. "${start}": the site would not post it: ${reasons}`,
     rowError: (variant, start, error) => `${variant}. "${start}": not ranked: ${error}`,
   },
@@ -66,10 +67,24 @@ const WORDS = {
     tooClose: (variants) => `Варіанти ${listOf(variants, 'і')} надто близькі, щоб обрати: їхній настрій першої хвилі різниться менше, ніж його може зсунути жереб.`,
     noneRanked: 'Жоден варіант не потрапив до рейтингу.',
     row: (variant, start, goesOn, mood, margin) => `${variant}. «${start}»: ${goesOn ? 'іде далі' : 'далі не йде'}, настрій ${signed(mood)} (±${margin.toFixed(2)})`,
+    reason: (reasons) => `, головна причина проскролити: ${reasons}`,
     rowBlocked: (variant, start, reasons) => `${variant}. «${start}»: сайт не опублікував би його: ${reasons}`,
     rowError: (variant, start, error) => `${variant}. «${start}»: без місця в рейтингу: ${error}`,
   },
 };
+
+/** The verdict's sentences about what the town said, as the post page words them: the leading answer, the few about equal, or none. */
+function saidLines(lang, said) {
+  const t = DICTIONARIES[lang];
+  return [['passed', 'scrolled'], ['annoyed', 'sorry'], ['hook', 'hook']].flatMap(([key, name]) => {
+    const list = said?.lists.find((candidate) => candidate.list === name);
+    if (!list) return [];
+    const words = t.verdict.asked[key][list.lead.kind];
+    if (list.lead.kind === 'none') return [words];
+    const labels = list.lead.ids.map((id) => list.answers.find((answer) => answer.id === id).text);
+    return [words(list.lead.kind === 'one' ? labels[0] : t.and(labels))];
+  });
+}
 
 /** Moderation reason ids → the site's words for them. */
 const reasonsIn = (lang, ids) => ids.map((id) => DICTIONARIES[lang].blocked.reasons[id] ?? id).join(', ');
@@ -102,6 +117,8 @@ export function summary(lang, report, { incompleteAt } = {}) {
     lines.push(words.incomplete(wave.answered, wave.people, incompleteAt, t.n));
   } else if (report.status === 'blocked') lines.push(report.verdict);
   else lines.push(`${sentence(report.verdict)} ${t.verdict.reached(report.reach, report.town)} ${t.verdict.balance(report.counters.glad, report.counters.sorry)}`);
+  if (report.status !== 'blocked' && report.status !== 'incomplete') lines.push(...saidLines(lang, report.said));
+  if (report.checks.length) lines.push(`${t.checks.title}: ${report.checks.map((check) => `${check.text[0].toLowerCase()}${check.text.slice(1)}: ${t.checks.values[check.reading]}`).join('; ')}.`);
   if (report.unlisted.length && report.status !== 'blocked') lines.push(words.unlisted(reasonsIn(lang, report.unlisted)));
   const best = report.demand?.best;
   if (best) lines.push(t.blocks.bestPrice(`${report.demand.currency}${t.n(best.price)}`, best.buyers, `${report.demand.currency}${t.n(best.revenue)}`));
@@ -129,7 +146,8 @@ export function compareSummary(lang, report, texts) {
   const unranked = rows.filter((row) => !report.ranking.includes(row.index));
   for (const row of [...report.ranking.map((index) => rows[index]), ...unranked]) {
     const start = startOf(texts[row.index]);
-    if (report.ranking.includes(row.index)) lines.push(words.row(row.index + 1, start, row.travels, row.expectedMood, row.margin));
+    const reason = row.mainReason && row.mainReason.kind !== 'none' ? words.reason(listOf(row.mainReason.texts, lang === 'uk' ? 'і' : 'and')) : '';
+    if (report.ranking.includes(row.index)) lines.push(`${words.row(row.index + 1, start, row.travels, row.expectedMood, row.margin)}${reason}`);
     else if (row.blocked.length) lines.push(words.rowBlocked(row.index + 1, start, reasonsIn(lang, row.blocked)));
     else lines.push(words.rowError(row.index + 1, start, row.error));
   }
