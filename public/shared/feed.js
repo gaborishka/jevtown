@@ -238,3 +238,62 @@ export function asking(presetId, text, gathered, weightOf = () => 1) {
     .map((question) => ({ question, ids: whoIsAsked(question, gathered, weightOf) }))
     .filter((asked) => asked.ids.length >= MIN_ASKED);
 }
+
+// -- an audience in words (requests.js:audienceRequest): only the people who fit it read the text
+
+/** A part a description names counts when one of its groups scores at least this, "Some of them". Not measured yet (scripts/probe.js audience). */
+export const PART_FROM = 0.5;
+/**
+ * Within a part that counts, a group counts from this share of the part's best group: with the best
+ * at "All of them", "Most of them" counts and "Some of them" does not. Not measured yet.
+ */
+export const PASS_SHARE = 0.7;
+/** The fewest people an audience may have: fewer would be a handful of noise, and one resident would not do. Not measured yet. */
+export const MIN_AUDIENCE = 50;
+
+/** Where each part of a description lives in a persona. Looking to buy nothing fits no shopping. */
+const VALUES_OF = {
+  interest: (who) => who.interests,
+  field: (who) => [who.field],
+  age: (who) => [who.ageGroup],
+  budget: (who) => [who.budget],
+  shopping: (who) => (who.shopping === 'nothing' ? [] : [who.shopping]),
+};
+
+/**
+ * The parts of a description that count, and the groups that count in each, from Jev's scores of
+ * an audience request and the parts it says the description names. A part the description does not
+ * name excludes nobody. → { interest: ['startups'], field: ['it'] }, or null when no part counts.
+ */
+export function partsOf(scores, named) {
+  const parts = {};
+  for (const part of named) {
+    const groups = Object.entries(scores).filter(([id]) => id.startsWith(`${part}:`)).map(([id, score]) => [id.slice(part.length + 1), score]);
+    const best = Math.max(0, ...groups.map(([, score]) => score));
+    if (best >= PART_FROM) parts[part] = groups.filter(([, score]) => score >= PASS_SHARE * best).map(([value]) => value);
+  }
+  return Object.keys(parts).length ? parts : null;
+}
+
+/** The personas with a counting group in every counting part, in the order given; within a part one group is enough. */
+export function audienceOf(personas, parts) {
+  const wanted = Object.entries(parts).map(([part, values]) => [VALUES_OF[part], new Set(values)]);
+  return personas.filter((who) => wanted.every(([valuesOf, values]) => valuesOf(who).some((value) => values.has(value))));
+}
+
+/** A byte per person of a town of `size`: 1 for the members of an audience. */
+export function audienceMask(members, size) {
+  const mask = new Uint8Array(size);
+  for (const who of members) mask[who.id] = 1;
+  return mask;
+}
+
+/** How many people the waves have reached after each wave, in a town or an audience of `total`: the town's waves, cut where they reach everybody. */
+export function waveReach(total) {
+  const reach = [];
+  for (const wave of WAVES) {
+    reach.push(Math.min(total, (reach.at(-1) ?? 0) + wave.size));
+    if (reach.at(-1) >= total) break;
+  }
+  return reach;
+}

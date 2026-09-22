@@ -7,6 +7,11 @@ import { unit } from './rng.js';
 
 /** Segments smaller than this are not reported: a handful of people is noise. */
 const MIN_SEGMENT = 40;
+/** The same floor for a crowd of `count`: 40 in the town, down to 15 in a small audience, where every group is small. */
+export const minSegment = (count) => Math.min(MIN_SEGMENT, Math.max(15, Math.round(0.004 * count)));
+
+/** The people of a town who are in an audience: all of them without one. A resident who moved in after the check is past the mask's end and left out. */
+export const inAudience = (people, mask) => (mask ? people.filter((who) => mask[who.id] === 1) : people);
 
 /** How many personas did what. → { reach, stopped, glad, sorry, byReaction: { liked: 12, ... } } */
 export function counters(presetId, keys, reactions) {
@@ -65,7 +70,7 @@ export function segments(presetId, keys, reactions, people) {
   }
   const lift = (count, size, total) => (total ? count / size / (total / people.length) : 0);
   return [...tallies.values()]
-    .filter((tally) => tally.size >= MIN_SEGMENT)
+    .filter((tally) => tally.size >= minSegment(people.length))
     .map((tally) => ({
       ...tally,
       stoppedLift: lift(tally.stopped, tally.size, all.stopped),

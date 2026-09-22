@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runCheck } from '../public/shared/check.js';
+import { runCheck, rateAudience } from '../public/shared/check.js';
 import { counters, segments, rankedAnswers, demandCurve, leaders, listView, readCheck, whySplit, mostAnnoyed, voicesOf } from '../public/shared/summary.js';
 import { crowd } from '../public/shared/personas.js';
 import { PRESETS, REASONS, ASKS, lookOf, answersFor, CANT_TELL } from '../public/shared/presets.js';
@@ -291,4 +291,71 @@ test('every reaction a person can be asked about says what they did', () => {
       if (!reaction.hollow) assert.equal(typeof reaction.did, 'string', `${presetId}.${id}`);
     }
   }
+});
+
+// -- an audience in words
+
+/** fakeJev, with an audience request read as "into gardening": interests named, gardening scored 4, nothing else. */
+function audienceJev(request) {
+  if (!request.state.audience) return fakeJev(request);
+  const answers = {};
+  for (const [id, question] of Object.entries(request.questions)) {
+    answers[id] = question.type === 'score' ? { score: id === 'interest:gardening' ? 4 : 0 } : { noul: id === 'part:interest' ? 0.9 : 0.02 };
+  }
+  return Promise.resolve({ answers, tokens: 100, usd: 0.001 });
+}
+
+/** A check that keeps every request it sent. */
+async function sending(options, send = audienceJev) {
+  const sent = [];
+  const result = await runCheck({ versionId: 'v1', pool: 'uk', presetId: 'post', text: 'tomatoes', ...options, send: (request) => (sent.push(request), send(request)) });
+  return { result, sent };
+}
+const isReaction = (request) => kindOf(request) === 'reactions';
+
+test('a check with an audience is read by its people only, in the town\'s waves cut at its size', async () => {
+  const { result, sent } = await sending({ audience: 'gardeners' }, (request) => audienceJev(request).then((answer) => {
+    // Everybody is glad, so the text goes on until nobody in the audience is left.
+    if (isReaction(request)) for (const id of Object.keys(request.questions)) answer.answers[id] = { probabilities: { liked: 1 } };
+    return answer;
+  }));
+  assert.equal(result.audience.size, 712);
+  assert.deepEqual(result.audience.parts, { interest: ['gardening'] });
+  assert.deepEqual(result.waves.map((wave) => wave.size), [600, 112]);
+  assert.equal(result.reach, 712);
+  assert.ok([...result.reactions.keys()].every((id) => !result.reactions[id] || result.audience.members[id] === 1));
+  assert.equal(sent.filter((request) => request.state.audience).length, 1);
+  assert.equal(sent.filter(isReaction).length, Math.ceil(600 / 100) + Math.ceil(112 / 100));
+});
+
+test('without an audience nothing about one is sent', async () => {
+  const { result, sent } = await sending({ maxWaves: 1 });
+  assert.equal(result.audience, null);
+  assert.ok(!sent.some((request) => request.state.audience));
+});
+
+test('an audience read once goes to the same people in every check', async () => {
+  const spent = [];
+  const rated = await rateAudience((request) => (spent.push(request), audienceJev(request)), 'gardeners');
+  assert.equal(spent.length, 1);
+  const [first, second] = [await sending({ audience: rated, maxWaves: 1 }), await sending({ audience: rated, maxWaves: 1, text: 'tomatoes and more' })];
+  assert.deepEqual(first.result.audience.members, second.result.audience.members);
+  assert.ok(![...first.sent, ...second.sent].some((request) => request.state.audience));
+  assert.equal(first.result.requests, first.sent.length);
+  assert.deepEqual((await sending({ audience: rated, maxWaves: 1 })).result.reactions, first.result.reactions);
+});
+
+test('a description the town cannot read, or one too few fit, stops the check before any wave', async () => {
+  const blind = (request) => (request.state.audience ? Promise.resolve({ answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => [id, question.type === 'score' ? { score: 1 } : { noul: 0.02 }])), tokens: 100, usd: 0.001 }) : fakeJev(request));
+  const sent = [];
+  await assert.rejects(runCheck({ send: (request) => (sent.push(request), blind(request)), presetId: 'post', pool: 'uk', text: 'tomatoes', versionId: 'v1', audience: 'left-handed people' }), (error) => {
+    assert.equal(error.code, 'no_fit');
+    assert.equal(error.spent.requests, 2);
+    return true;
+  });
+  assert.ok(!sent.some((request) => Object.keys(request.questions).some((id) => /^p\d/.test(id))), 'nobody was asked');
+
+  const scored = { 'interest:crypto': 4, 'age:a60': 4, 'budget:wealthy': 4 };
+  const few = (request) => (request.state.audience ? Promise.resolve({ answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => [id, question.type === 'score' ? { score: scored[id] ?? 0 } : { noul: ['part:interest', 'part:age', 'part:budget'].includes(id) ? 0.9 : 0.02 }])), tokens: 100, usd: 0.001 }) : fakeJev(request));
+  await assert.rejects(runCheck({ send: few, presetId: 'post', pool: 'uk', text: 'tomatoes', versionId: 'v1', audience: 'wealthy crypto fans over 60' }), (error) => error.code === 'few_fit' && error.fits === 1);
 });
