@@ -359,3 +359,15 @@ test('a description the town cannot read, or one too few fit, stops the check be
   const few = (request) => (request.state.audience ? Promise.resolve({ answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => [id, question.type === 'score' ? { score: scored[id] ?? 0 } : { noul: ['part:interest', 'part:age', 'part:budget'].includes(id) ? 0.9 : 0.02 }])), tokens: 100, usd: 0.001 }) : fakeJev(request));
   await assert.rejects(runCheck({ send: few, presetId: 'post', pool: 'uk', text: 'tomatoes', versionId: 'v1', audience: 'wealthy crypto fans over 60' }), (error) => error.code === 'few_fit' && error.fits === 1);
 });
+
+test('with blocking, a description the site would refuse stops the check before any wave; without it, it is reported', async () => {
+  const hateful = (request) => audienceJev(request).then((answer) => {
+    if (request.state.audience) answer.answers['unlisted:hate'] = { noul: 0.95 };
+    return answer;
+  });
+  const asked = [];
+  await assert.rejects(runCheck({ send: (request) => (asked.push(request), hateful(request)), presetId: 'post', pool: 'uk', text: 'tomatoes', versionId: 'v1', audience: 'gardeners', blocking: true }), (error) => error.code === 'blocked' && error.field === 'audience' && error.blocked.includes('hate'));
+  assert.ok(!asked.some(isReaction), 'nobody was asked');
+  const reported = await sending({ audience: 'gardeners', maxWaves: 1 }, hateful);
+  assert.deepEqual(reported.result.audience.blocked, ['hate']);
+});
