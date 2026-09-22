@@ -2,14 +2,16 @@
 // residents visitors moved in. Dots that have just reacted pop in one
 // after another, so a wave is seen arriving; a finished check is replayed wave by wave; lit dots
 // glow (a second, blurred canvas under the first); a group of people can be singled out while the
-// rest fades; a crowd that waits for a text twinkles.
+// rest fades; a crowd that waits for a text twinkles. With an audience, its members the text has not
+// reached are lighter than the rest of the town.
 import { GRID } from './shared/personas.js';
-import { PRESETS, LOOKS, lookOf, NOT_SHOWN } from './shared/presets.js';
+import { PRESETS, LOOKS, IN_AUDIENCE, lookOf, NOT_SHOWN } from './shared/presets.js';
 
 const LOOK_NAMES = Object.keys(LOOKS);
 const LIT = ['stopped', 'glad', 'spreads', 'sorry'];
-const REACTION_PALETTE = LOOK_NAMES.map((name) => ({ color: LOOKS[name], hollow: name === 'hollow', glow: LIT.includes(name) }));
+const REACTION_PALETTE = [...LOOK_NAMES.map((name) => ({ color: LOOKS[name], hollow: name === 'hollow', glow: LIT.includes(name) })), { color: IN_AUDIENCE }];
 const DARK = LOOK_NAMES.indexOf('dark');
+const MEMBER = LOOK_NAMES.length; // in the post's audience, and not reached by the text
 
 const POP_MS = 420;
 const SPREAD_MS = 1400; // a batch of 100 people arrives over this long
@@ -47,6 +49,7 @@ export function createGrid(host, { onHover, onPick, label = '', hint = '' } = {}
   let bornAt = new Float64Array(GRID * GRID);
   let rows = GRID;
   let focus = null; // Uint8Array: 1 = in the group that is singled out
+  let members = null; // Uint8Array: 1 = in the post's audience; null = the whole town
   let marked = -1;
   let hailedAt = 0; // when the marked house was last hailed: rings run out of it for a while
   let hovered = -1;
@@ -103,14 +106,17 @@ export function createGrid(host, { onHover, onPick, label = '', hint = '' } = {}
 
     const growing = [];
     const waiting = new Path2D();
+    const waitingMember = new Path2D();
+    const byAudience = members && palette === REACTION_PALETTE;
     const bright = palette.map(() => new Path2D());
     const faint = palette.map(() => new Path2D());
     for (let id = 0; id < look.length; id++) {
       const [x, y] = center(id, cell);
       if (bornAt[id]) {
         if (now < bornAt[id]) {
-          waiting.moveTo(x + radius, y);
-          waiting.arc(x, y, radius, 0, Math.PI * 2);
+          const path = byAudience && members[id] === 1 ? waitingMember : waiting;
+          path.moveTo(x + radius, y);
+          path.arc(x, y, radius, 0, Math.PI * 2);
           continue;
         }
         if (now < bornAt[id] + POP_MS) {
@@ -119,13 +125,15 @@ export function createGrid(host, { onHover, onPick, label = '', hint = '' } = {}
         }
         bornAt[id] = 0;
       }
-      const path = (focus && !focus[id] ? faint : bright)[look[id]];
+      const path = (focus && !focus[id] ? faint : bright)[byAudience && look[id] === DARK && members[id] === 1 ? MEMBER : look[id]];
       path.moveTo(x + radius, y);
       path.arc(x, y, radius, 0, Math.PI * 2);
     }
 
     context.fillStyle = palette[DARK]?.color ?? LOOKS.dark;
     context.fill(waiting);
+    context.fillStyle = IN_AUDIENCE;
+    context.fill(waitingMember);
     palette.forEach((entry, index) => {
       for (const [path, alpha] of [[bright[index], 1], [faint[index], FAINT]]) {
         context.globalAlpha = alpha;
@@ -354,6 +362,11 @@ export function createGrid(host, { onHover, onPick, label = '', hint = '' } = {}
       lastBirth = 0;
       redraw();
     },
+    /** The post's audience: mask[id] = 1 for its members, drawn lighter than the town until the text reaches them; null for the whole town. */
+    setAudience(mask) {
+      members = mask;
+      redraw();
+    },
     /** Singles out a group: mask[id] = 1 for its people; null brings everybody back. */
     focusOn(mask) {
       focus = mask;
@@ -391,7 +404,7 @@ export function createGrid(host, { onHover, onPick, label = '', hint = '' } = {}
 }
 
 /** A still picture of a finished check, for a card in the feed: squares when small, dots when there is room. */
-export function drawStill(canvas, presetId, reactions) {
+export function drawStill(canvas, presetId, reactions, audience = null) {
   const side = Math.round(canvas.getBoundingClientRect().width) || GRID;
   const ratio = Math.min(3, window.devicePixelRatio || 1);
   const size = Math.max(GRID, side * ratio);
@@ -402,7 +415,8 @@ export function drawStill(canvas, presetId, reactions) {
   REACTION_PALETTE.forEach((entry, index) => {
     context.beginPath();
     for (let id = 0; id < GRID * GRID; id++) {
-      if (looks[reactions[id] ?? NOT_SHOWN] !== index) continue;
+      const at = looks[reactions[id] ?? NOT_SHOWN];
+      if ((at === DARK && audience?.[id] === 1 ? MEMBER : at) !== index) continue;
       const x = (id % GRID) * cell;
       const y = Math.floor(id / GRID) * cell;
       if (cell < 3) context.rect(x, y, cell * 0.9, cell * 0.9);

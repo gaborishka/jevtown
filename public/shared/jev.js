@@ -5,7 +5,7 @@
 const TIMEOUT_MS = 30_000;
 const MAX_ATTEMPTS = 5;
 /** TypeSafe's list price per input token; its API reports tokens and no cost, output is free. */
-const TYPESAFE_USD_PER_TOKEN = 0.042 / 1e6;
+export const TYPESAFE_USD_PER_TOKEN = 0.042 / 1e6;
 
 export const PROVIDERS = {
   typesafe: {

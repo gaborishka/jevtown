@@ -5,6 +5,8 @@ import { PRESETS, ASKS, lookOf, answersFor } from './presets.js';
 import { INTERESTS, FIELDS, AGE_GROUPS, BUDGETS, SHOPPING } from './vocab.js';
 
 export const MAX_TEXT_CHARS = 2000;
+/** How long an audience description may be: a line, not a brief. */
+export const MAX_AUDIENCE_CHARS = 200;
 
 const stateOf = (preset, text) => ({ seen_in: preset.seenIn, [preset.noun]: text.slice(0, MAX_TEXT_CHARS) });
 const criteriaOf = (reactions) => Object.fromEntries(Object.entries(reactions).map(([id, reaction]) => [id, reaction.criteria]));
@@ -59,6 +61,20 @@ export function askRequest(question, presetId, text, people, reactionOf) {
 
 const CARE = ['Not at all: it has nothing to do with them', 'Barely', 'Some of them would stop for it', 'Most of them would stop for it', 'It is written exactly for them'];
 
+/** The kinds of people the feed algorithm knows, as Jev reads them: 60, and 83 in a market. → [['interest:gardening', 'people who are into gardening'], …] */
+export function groupsOf(market) {
+  const groups = [
+    ...INTERESTS.map((item) => [`interest:${item.id}`, `people who are into ${item.en}`]),
+    ...Object.entries(FIELDS).map(([id, field]) => [`field:${id}`, field.group]),
+    ...AGE_GROUPS.map((item) => [`age:${item.id}`, item.group]),
+  ];
+  if (market) {
+    groups.push(...SHOPPING.filter((item) => item.id !== 'nothing').map((item) => [`shopping:${item.id}`, `people who are looking to buy ${item.en}`]));
+    groups.push(...BUDGETS.map((item) => [`budget:${item.id}`, item.group]));
+  }
+  return groups;
+}
+
 /**
  * The feed algorithm's question: how much each kind of people cares about the text. One score
  * question per attribute value; ids are `<attribute>:<value>`. Shopping and budget are asked for
@@ -66,17 +82,8 @@ const CARE = ['Not at all: it has nothing to do with them', 'Barely', 'Some of t
  */
 export function exposureRequest(presetId, text) {
   const preset = PRESETS[presetId];
-  const groups = [
-    ...INTERESTS.map((item) => [`interest:${item.id}`, `people who are into ${item.en}`]),
-    ...Object.entries(FIELDS).map(([id, field]) => [`field:${id}`, field.group]),
-    ...AGE_GROUPS.map((item) => [`age:${item.id}`, item.group]),
-  ];
-  if (preset.market) {
-    groups.push(...SHOPPING.filter((item) => item.id !== 'nothing').map((item) => [`shopping:${item.id}`, `people who are looking to buy ${item.en}`]));
-    groups.push(...BUDGETS.map((item) => [`budget:${item.id}`, item.group]));
-  }
   const questions = {};
-  for (const [id, group] of groups) {
+  for (const [id, group] of groupsOf(preset.market)) {
     questions[id] = { type: 'score', instructions: `How much would ${group} care about this ${preset.noun}?`, criteria: CARE };
   }
   return { state: stateOf(preset, text), questions };
@@ -105,6 +112,7 @@ export const UNLISTED = {
 };
 export const UNLISTED_FROM = 0.5;
 export const BLOCKED_FROM = 0.85;
+const NOUL = { true: 'Yes, clearly', false: 'No, or it is only mentioned or discussed' };
 
 /**
  * What Jev reads in the text for its author, asked in the same request: yes or no questions whose
@@ -141,7 +149,7 @@ export const checksFor = (presetId) => Object.entries(TEXT_CHECKS)
 export function openingRequest(presetId, text) {
   const request = exposureRequest(presetId, text);
   for (const [id, instructions] of Object.entries(UNLISTED)) {
-    request.questions[`unlisted:${id}`] = { type: 'noul', instructions, criteria: { true: 'Yes, clearly', false: 'No, or it is only mentioned or discussed' } };
+    request.questions[`unlisted:${id}`] = { type: 'noul', instructions, criteria: NOUL };
   }
   for (const [id, instructions, criteria] of checksFor(presetId)) request.questions[`check:${id}`] = { type: 'noul', instructions, criteria };
   return request;
@@ -166,4 +174,56 @@ export function openingAnswers(answers) {
     else scores[id] = (answer.score ?? 0) / (CARE.length - 1);
   }
   return { scores, unlisted, blocked, checks };
+}
+
+// -- an audience in words: whom the author says the text is for
+
+const FIT = ['None of them', 'A few of them', 'Some of them', 'Most of them', 'All of them'];
+/** From this answer Jev says the description names a part of a person. Not measured yet (scripts/probe.js audience). */
+export const NAMED_FROM = 0.5;
+/**
+ * The parts of a person the town knows, the ones feed.js:namesOf scores. The description counts
+ * only in the parts it names: "people over 60" says nothing about work, so it keeps those who work.
+ */
+export const PARTS = {
+  field: 'Does the description say what the people do: their work, or that they study, stay at home with children or are retired?',
+  age: 'Does the description say how old the people are?',
+  interest: 'Does the description say what the people are into: hobbies, topics, pastimes?',
+  budget: 'Does the description say how much money the people have?',
+  shopping: 'Does the description say what the people are looking to buy?',
+};
+
+/**
+ * What Jev reads in an audience description, in one request with the description as state and no
+ * text: how many of the people it is about are in each group the feed knows (83, money and shopping
+ * included, since a description can name them), which parts of a person it names, and the moderation
+ * questions about the description. The group question asks the audience's share in the group: the
+ * reverse gives "a few" for every job when the audience is rare.
+ */
+export function audienceRequest(description) {
+  const questions = {};
+  for (const [id, group] of groupsOf(true)) {
+    questions[id] = { type: 'score', instructions: `How many of the people this description is about are ${group}?`, criteria: FIT };
+  }
+  for (const [id, instructions] of Object.entries(PARTS)) {
+    questions[`part:${id}`] = { type: 'noul', instructions, criteria: { true: 'Yes, it says so', false: 'No, or it only makes it likely' } };
+  }
+  // The moderation questions ask about the description, as resident.js:profileRequest asks about a profile.
+  for (const [id, instructions] of Object.entries(UNLISTED)) {
+    questions[`unlisted:${id}`] = { type: 'noul', instructions: instructions.replace(/\btext\b/g, 'description'), criteria: NOUL };
+  }
+  return { state: { seen_in: 'an author describing, in their own words, the readers a text is written for', audience: description.slice(0, MAX_AUDIENCE_CHARS) }, questions };
+}
+
+/** Answers of an audience request → { scores, named: ['field', …], unlisted, blocked }. */
+export function audienceAnswers(answers) {
+  const named = [];
+  const rest = {};
+  for (const [id, answer] of Object.entries(answers)) {
+    if (id.startsWith('part:')) {
+      if ((answer.noul ?? 0) >= NAMED_FROM) named.push(id.slice('part:'.length));
+    } else rest[id] = answer;
+  }
+  const { scores, unlisted, blocked } = openingAnswers(rest);
+  return { scores, named: Object.keys(PARTS).filter((part) => named.includes(part)), unlisted, blocked };
 }

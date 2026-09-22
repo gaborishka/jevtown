@@ -109,6 +109,9 @@ export const PRESETS = {
  * dark = not shown, scrolled, stopped (looked and did nothing), glad, spreads (glad and carries it
  * further), sorry, hollow (can't tell).
  */
+/** A member of the post's audience the text has not reached: lighter than `dark`, the rest of the town. Outside LOOKS, so legends and pictures of posts without an audience do not change. */
+export const IN_AUDIENCE = '#262e3b';
+
 export const LOOKS = { dark: '#141922', scrolled: '#39414f', hollow: '#5d6880', stopped: '#6ea8fe', glad: '#3ddc84', spreads: '#ffd84d', sorry: '#ff5c5c' };
 
 export function lookOf(presetId, reactionId) {

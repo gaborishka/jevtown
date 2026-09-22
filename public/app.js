@@ -7,10 +7,10 @@ import { createGrid, drawStill } from './grid.js';
 import { createShowcase } from './showcase.js';
 import { drawCard } from './card.js';
 import { crowd, poolFor, interestHome, GRID, CROWD } from './shared/personas.js';
-import { PRESETS, LOOKS, REASONS, LISTS, lookOf, questionOfList, priceLadder } from './shared/presets.js';
-import { counters, segments, topSegments, biggestSegments, mostAnnoyed, rankedAnswers, demandCurve, voicesOf, listView, whySplit, readCheck, DRAIN_NOTE_FROM } from './shared/summary.js';
-import { checksFor } from './shared/requests.js';
-import { travels, WAVES } from './shared/feed.js';
+import { PRESETS, LOOKS, IN_AUDIENCE, REASONS, LISTS, lookOf, questionOfList, priceLadder } from './shared/presets.js';
+import { counters, segments, inAudience, topSegments, biggestSegments, mostAnnoyed, rankedAnswers, demandCurve, voicesOf, listView, whySplit, readCheck, DRAIN_NOTE_FROM } from './shared/summary.js';
+import { checksFor, MAX_AUDIENCE_CHARS } from './shared/requests.js';
+import { travels, waveReach, MIN_AUDIENCE } from './shared/feed.js';
 import { unit } from './shared/rng.js';
 import { CARDS, CARD } from './shared/quiz.js';
 import { residentsOf, pickCards, scores, QUIZ_REACTIONS, TUNE_CARDS, TEST_CARDS, NAME_CHARS, PLACE_CHARS, ABOUT_CHARS, MAX_INTERESTS } from './shared/resident.js';
@@ -115,7 +115,7 @@ function icon(name, size = 18) {
 async function api(path, options) {
   const response = await fetch(path, options);
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(body.error?.message ?? response.statusText), { code: body.error?.code ?? 'error', status: response.status, reasons: body.error?.reasons ?? [] });
+  if (!response.ok) throw Object.assign(new Error(body.error?.message ?? response.statusText), { code: body.error?.code ?? 'error', status: response.status, reasons: body.error?.reasons ?? [], field: body.error?.field ?? null, fits: body.error?.fits ?? null });
   return body;
 }
 
@@ -143,21 +143,28 @@ async function loadTown() {
 }
 const cityLabels = Object.fromEntries(Object.values(POOLS).flatMap((pool) => pool.cities.map(([english, ukrainian]) => [english, { en: english, uk: ukrainian }])));
 
-/** What the Worker keeps of a check: the reaction of every persona, the wave that reached it, its follow-up answer. */
+/**
+ * What the Worker keeps of a check: the reaction of every persona, the wave that reached it, its follow-up answer,
+ * and, asked for by name, the other planes: `audience` is 1 for a member of the post's audience.
+ */
 const crowdCache = new Map();
-async function fetchCrowd(post, number, fresh = false) {
-  const key = `${post.id}/${number}`;
-  if (!fresh && crowdCache.has(key)) return crowdCache.get(key);
-  const response = await fetch(`/api/reactions/${key}`, fresh ? { cache: 'no-store' } : {});
+const crowdPath = (post, number, planes = []) => `/api/reactions/${post.id}/${number}${planes.length ? `?planes=${planes.join(',')}` : ''}`;
+async function fetchCrowd(post, number, fresh = false, planes = []) {
+  const path = crowdPath(post, number, planes);
+  if (!fresh && crowdCache.has(path)) return crowdCache.get(path);
+  const response = await fetch(path, fresh ? { cache: 'no-store' } : {});
   if (!response.ok) throw new Error(`reactions ${response.status}`);
   const bytes = new Uint8Array(await response.arrayBuffer());
-  const size = Math.floor(bytes.length / 3); // the town as it was when the text was posted
+  const size = Math.floor(bytes.length / (3 + planes.length)); // the town as it was when the text was posted
   if (size > crowdOf(post.pool).length) await loadTown(); // somebody has moved in since this page opened
   const part = (n) => bytes.slice(size * n, size * (n + 1));
   const data = { reactions: part(0), waves: part(1), answers: part(2) };
-  if (!fresh) crowdCache.set(key, data);
+  planes.forEach((plane, index) => (data[plane] = part(3 + index)));
+  if (!fresh) crowdCache.set(path, data);
   return data;
 }
+/** The planes a post's crowd is fetched with. */
+const planesOf = (post) => (post.audience ? ['audience'] : []);
 
 /** A number that counts up to its new value. */
 function countTo(element, value, ms = 700) {
@@ -249,8 +256,11 @@ function mapLabel(interest) {
   return h('span', { class: home.x > 76 ? 'to-left' : home.x < 24 ? 'to-right' : '', style: `left:${home.x}%;top:${home.y}%` }, INTEREST[interest][lang]);
 }
 
-function legend() {
-  return h('ul', { class: 'legend' }, ...Object.entries(LOOKS).map(([look, color]) => h('li', {}, h('i', { class: look === 'hollow' ? 'dot hollow' : 'dot', style: `--c:${color}` }), t.looks[look])));
+/** What the colours of the map mean. With an audience, the dark dots are the rest of the town, and its members the text has not reached have a colour of their own. */
+function legend(audience = false) {
+  const items = Object.entries(LOOKS).map(([look, color]) => h('li', {}, h('i', { class: look === 'hollow' ? 'dot hollow' : 'dot', style: `--c:${color}` }), audience && look === 'dark' ? t.audience.legend.dark : t.looks[look]));
+  if (audience) items.splice(1, 0, h('li', {}, h('i', { class: 'dot', style: `--c:${IN_AUDIENCE}` }), t.audience.legend.waiting));
+  return h('ul', { class: 'legend' }, ...items);
 }
 
 // -- what the crowd says
@@ -319,8 +329,10 @@ function priceOf(raw) {
  * The composer is a post in the making: the same face and name as in the feed, the text, and a bar
  * of tools under it. What is being written (a post, a listing, a product, a headline) is a tool of
  * that bar, the way a poll is in other networks: picking Product opens the prices inside the draft.
+ * Whom the text is for is another tool: it opens a field for the audience in words. A new version
+ * goes to the audience of its post (`audience`), so it only says which.
  */
-function composer({ post = null, presetId = 'post', pool = null, text = '', options = {}, unlisted = false, onCancel } = {}) {
+function composer({ post = null, presetId = 'post', pool = null, text = '', options = {}, unlisted = false, audience = null, askAudience = false, onCancel } = {}) {
   let preset = presetId;
   let currencyTouched = Boolean(options.currency);
   let pricesTouched = Boolean(options.prices);
@@ -359,6 +371,26 @@ function composer({ post = null, presetId = 'post', pool = null, text = '', opti
     paint();
     modes.querySelector('.on').focus();
   } });
+  const described = () => !audienceField.hidden && audienceInput.value.trim();
+  const readersWords = () => (described() ? t.compose.readersAudience[readerPool()] : t.compose.readers[readerPool()](townSize(readerPool())));
+  const audienceInput = h('input', { name: 'audience', class: 'audience-input', maxLength: MAX_AUDIENCE_CHARS, placeholder: t.compose.audiencePlaceholder, autocomplete: 'off', 'aria-label': t.compose.audienceLabel, oninput: () => say(readers, readersWords()),
+    onkeydown: (event) => event.key === 'Enter' && !(event.metaKey || event.ctrlKey) && (event.preventDefault(), area.focus()) }); // Enter in the audience is not "publish"
+  const audienceField = h('fieldset', { class: 'audience-field', hidden: !askAudience },
+    h('legend', {}, icon('focus', 15), t.compose.audienceLabel),
+    h('div', { class: 'audience-row' }, audienceInput,
+      h('button', { type: 'button', class: 'audience-remove', 'aria-label': t.compose.audienceRemove, title: t.compose.audienceRemove, onclick: () => (showAudience(false), audienceTool.focus()) }, icon('x', 14))),
+    h('p', { class: 'ladder-note' }, t.compose.audienceNote));
+  /** Opens or closes the field; closed, it is empty, so what is hidden is never sent. */
+  function showAudience(open) {
+    audienceField.hidden = !open;
+    audienceTool?.setAttribute('aria-expanded', String(open));
+    if (!open) audienceInput.value = '';
+    say(readers, readersWords());
+    if (open) audienceInput.focus();
+  }
+  const audienceTool = post ? null : h('button', { type: 'button', class: 'audience-tool', 'aria-expanded': String(askAudience), 'aria-label': t.compose.audience, title: t.compose.audienceLabel, onclick: () => showAudience(audienceField.hidden) },
+    icon('focus', 17), h('span', {}, t.compose.audience));
+  const kept = post && audience && h('p', { class: 'audience-line' }, icon('focus', 14), h('span', {}, t.compose.audienceKept(audience)));
   const readers = h('span', { class: 'readers' });
   const promise = h('span', { class: 'promise' });
   const left = h('span', { class: 'left', hidden: true });
@@ -377,7 +409,7 @@ function composer({ post = null, presetId = 'post', pool = null, text = '', opti
     area.style.height = 'auto';
     area.style.height = `${area.scrollHeight + 2}px`;
     area.style.overflowY = area.scrollHeight > area.clientHeight + 4 ? 'auto' : 'hidden'; // a long placeholder must not bring a scrollbar
-    say(readers, t.compose.readers[readerPool()](townSize(readerPool())));
+    say(readers, readersWords());
     // The currency follows the crowd only while the ladder is untouched: 249 typed as hryvnias must never turn into $249.
     if (!currencyTouched && !pricesTouched && currency.value !== (readerPool() === 'uk' ? '₴' : '$')) {
       currency.value = readerPool() === 'uk' ? '₴' : '$';
@@ -457,8 +489,8 @@ function composer({ post = null, presetId = 'post', pool = null, text = '', opti
         h('label', { class: 'visibility' }, listed,
           h('span', { class: 'when-on' }, icon('globe', 13), t.compose.listed),
           h('span', { class: 'when-off' }, icon('link', 13), t.compose.unlisted)))),
-    h('div', { class: 'draft-body' }, area), ladder, problem,
-    h('div', { class: 'composer-bar' }, modes, h('span', { class: 'grow' }), left,
+    h('div', { class: 'draft-body' }, area), ladder, audienceField, kept, problem,
+    h('div', { class: 'composer-bar' }, modes, audienceTool, h('span', { class: 'grow' }), left,
       onCancel && h('button', { type: 'button', class: 'quiet', onclick: onCancel }, t.compose.cancel), submit),
     h('p', { class: 'readers-line' }, h('i', { class: 'live' }), readers, h('span', { class: 'sep' }, '·'), promise));
   paint();
@@ -489,13 +521,16 @@ function composer({ post = null, presetId = 'post', pool = null, text = '', opti
     store.set('nickname', nickname.value.trim());
     store.set('listed', listed.checked ? 'yes' : 'no');
     try {
-      const body = { preset, pool: readerPool(), text: area.value, nickname: nickname.value, listed: listed.checked, post: post ?? undefined };
+      const body = { preset, pool: readerPool(), text: area.value, nickname: nickname.value, listed: listed.checked, post: post ?? undefined, audience: (!post && described()) || undefined };
       if (prices) Object.assign(body, { prices, currency: currency.value });
       const started = await api('/api/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       if (form.isConnected) go(`/p/${started.post}?v=${started.number}`); // a visitor who went elsewhere meanwhile stays there
     } catch (error) {
-      problem.textContent = error.code === 'blocked' ? t.blocked.text(error.reasons.map((reason) => t.blocked.reasons[reason]).filter(Boolean)) : t.errors[error.code] ?? t.errors.error;
+      const reasons = error.reasons.map((reason) => t.blocked.reasons[reason]).filter(Boolean);
+      problem.textContent = error.code === 'blocked' ? t.blocked[error.field === 'audience' ? 'audience' : 'text'](reasons)
+        : error.code === 'few_fit' ? t.errors.few_fit(error.fits ?? 0, MIN_AUDIENCE) : t.errors[error.code] ?? t.errors.error;
       problem.hidden = false;
+      if (['no_fit', 'few_fit', 'bad_audience'].includes(error.code) || error.field === 'audience') audienceInput.focus();
       submit.disabled = false;
       submit.classList.remove('busy');
       submit.textContent = post ? t.compose.again : t.compose.go;
@@ -568,10 +603,11 @@ function home(view, restoreY = 0) {
   const caption = h('div', { class: 'rail-caption' });
   const ticker = h('ul', { class: 'ticker' });
   const tickerTitle = h('h3', { class: 'rail-sub', hidden: true }, t.rail.voices); // no voices until somebody has posted
+  let railLegend = legend(); // a post with an audience has one more colour
   const rail = h('aside', { class: 'rail' },
     h('div', { class: 'rail-in' },
       h('div', { class: 'rail-head' }, h('h2', {}, t.rail.title), h('span', { class: 'rail-size' }, h('i', { class: 'live' }), t.rail.size(townSize(homePool())))),
-      gridHost, caption, legend(),
+      gridHost, caption, railLegend,
       tickerTitle, ticker));
   const grid = createGrid(gridHost, {
     hint: t.mapKeys,
@@ -581,7 +617,8 @@ function home(view, restoreY = 0) {
       const who = whoIs(focused.post.pool, personaId);
       if (!who) return showTip(null);
       const byte = focused.data.reactions[personaId];
-      showTip([personaTitle(who), personaLine(who), byte ? reactionWord(Object.keys(PRESETS[focused.post.preset].reactions)[byte - 1], who) : t.looks.dark], at);
+      const outside = focused.data.audience && focused.data.audience[personaId] !== 1;
+      showTip([personaTitle(who), personaLine(who), byte ? reactionWord(Object.keys(PRESETS[focused.post.preset].reactions)[byte - 1], who) : outside ? t.audience.outside : t.looks.dark], at);
     },
     onPick: (personaId) => focused && go(`/u/${focused.post.pool}/${personaId}`),
   });
@@ -594,6 +631,8 @@ function home(view, restoreY = 0) {
     if (!railSeen || painted === focused) return;
     painted = focused;
     grid.people(townSize(focused?.post.pool ?? homePool()));
+    grid.setAudience(focused?.data.audience ?? null);
+    railLegend.replaceWith((railLegend = legend(Boolean(focused?.data.audience))));
     if (!focused) {
       hush();
       grid.wait(true);
@@ -605,7 +644,7 @@ function home(view, restoreY = 0) {
     if (replayed.has(post.id)) grid.setAll(post.preset, data.reactions);
     else grid.replay(post.preset, data.reactions, data.waves, { gap: 420, spread: 420 });
     replayed.add(post.id);
-    grid.describe(t.post.picture(post));
+    grid.describe(`${t.post.picture(post)}${data.audience ? ` ${t.audience.picture}` : ''}`);
     put(caption,
       h('a', { class: 'caption-post', href: `/p/${post.id}`, 'data-link': true },
         postHead(post, post.createdAt), h('p', { class: 'caption-text' }, clip(post.snippet, 120))));
@@ -680,16 +719,17 @@ function home(view, restoreY = 0) {
       h('div', { class: 'card-body' },
         h('div', { class: 'card-main' },
           h('a', { class: 'card-text', href: `/p/${post.id}`, 'data-link': true }, post.snippet.length >= 280 ? `${post.snippet}…` : post.snippet),
+          post.audience && h('p', { class: 'card-audience' }, icon('focus', 13), h('span', {}, t.audience.line(post.audience))),
           post.versions > 1 && h('p', { class: 'card-note' }, t.feed.versions(post.versions))),
         canvas),
       stats, voices);
     const card = {
       post, element, data: null,
       async load() {
-        const data = await fetchCrowd(post, post.version).catch(() => null);
+        const data = await fetchCrowd(post, post.version, false, planesOf(post)).catch(() => null);
         if (!alive || !data) return;
         card.data = data;
-        drawStill(canvas, post.preset, data.reactions);
+        drawStill(canvas, post.preset, data.reactions, data.audience);
         canvas.classList.add('ready');
         stats.update(counters(post.preset, Object.keys(PRESETS[post.preset].reactions), data.reactions), 0);
         card.voices = voicesOf(post.id, post.preset, data.reactions).slice(0, 40);
@@ -815,8 +855,10 @@ function bars(rows, onFocus) {
     row.note && h('span', { class: 'bar-note' }, row.note))));
 }
 
-/** How many people a text has reached once wave `index` is over: the same numbers the stepper shows. */
-const reachAfter = (index) => Math.min(CROWD, WAVES.slice(0, index + 1).reduce((sum, wave) => sum + (wave.size === Infinity ? CROWD : wave.size), 0));
+/** How many people a text has reached once each wave is over, in the town or in the post's audience: the numbers the stepper shows. */
+const reachOf = (version) => waveReach(version.audience?.size ?? CROWD);
+/** The wave a text did not get past, or -1. The last wave, of the town or of the audience, decides nothing. */
+const stoppedAt = (version) => version.waves.findIndex((wave, index) => !wave.travels && index < reachOf(version).length - 1);
 
 function block(title, note, ...content) {
   return h('section', { class: 'block' }, h('h3', {}, title), note && h('p', { class: 'hint' }, note), ...content);
@@ -835,6 +877,7 @@ function postPage(view, post) {
   let reactions = new Uint8Array(crowdOf(post.pool).length);
   let waves = new Uint8Array(reactions.length);
   let answers = new Uint8Array(reactions.length);
+  let members = null; // a byte per persona, 1 = in the post's audience; null = the whole town
   let only = null; // the reaction picked among the chips: the map and the voices show these people alone
   let singled = false; // whether the map is showing that group now
   let audience = 'stopped';
@@ -859,7 +902,8 @@ function postPage(view, post) {
       if (!who) return showTip(null);
       const byte = reactions[personaId];
       const reply = saidWords(answered.get(personaId));
-      showTip([personaTitle(who), personaLine(who), byte ? `${reactionWord(keys[byte - 1], who)}${reply ? ` · ${reply}` : ''}` : t.looks.dark, answerWords(post.preset, version.options, answers[personaId])?.text], at);
+      const unseen = members && members[personaId] !== 1 ? t.audience.outside : t.looks.dark;
+      showTip([personaTitle(who), personaLine(who), byte ? `${reactionWord(keys[byte - 1], who)}${reply ? ` · ${reply}` : ''}` : unseen, answerWords(post.preset, version.options, answers[personaId])?.text], at);
     },
     onPick: (personaId) => go(`/u/${post.pool}/${personaId}`),
   });
@@ -903,23 +947,36 @@ function postPage(view, post) {
     }));
     const share = copyLink(`/p/${post.id}`);
     const editor = h('div', { class: 'editor' });
+    const reopen = () => {
+      editor.replaceChildren();
+      if (edit) edit.hidden = false;
+      if (withAudience) withAudience.hidden = false;
+    };
     const edit = post.mine && version.state === 'done' && h('button', { type: 'button', class: 'quiet', onclick: () => {
       edit.hidden = true;
-      editor.replaceChildren(composer({ post: post.id, presetId: post.preset, pool: post.pool, text: version.text, options: version.options, unlisted: !post.listed, onCancel: () => (editor.replaceChildren(), (edit.hidden = false)) }));
+      if (withAudience) withAudience.hidden = true;
+      editor.replaceChildren(composer({ post: post.id, presetId: post.preset, pool: post.pool, text: version.text, options: version.options, unlisted: !post.listed, audience: post.audience, onCancel: reopen }));
       editor.querySelector('textarea').focus();
     } }, icon('pen', 16), h('span', {}, t.compose.edit));
+    // The same text for the people it is meant for: a new post, since the audience of a post never changes.
+    const withAudience = post.mine && version.state === 'done' && !post.audience && h('button', { type: 'button', class: 'quiet', onclick: () => {
+      withAudience.hidden = true;
+      if (edit) edit.hidden = true;
+      editor.replaceChildren(composer({ presetId: post.preset, pool: post.pool, text: version.text, options: version.options, askAudience: true, onCancel: reopen }));
+      editor.querySelector('.audience-input').focus();
+    } }, icon('focus', 16), h('span', {}, t.compose.withAudience));
     document.title = `${clip(version.text, 60)} · ${t.brand}`;
     // What the check showed, in words, before the numbers. The wave that did not let the text through decides the headline, not the balance of reactions.
     const totals = version.state === 'done' && version.summary?.counters;
-    const stoppedAt = version.waves.findIndex((wave, index) => !wave.travels && index < WAVES.length - 1);
+    const stopped = stoppedAt(version);
     const said = version.summary?.said;
     const asked = [['passed', 'scrolled'], ['annoyed', 'sorry'], ['hook', 'hook']].map(([key, list]) => [key, listView(said, list, post.preset)]).filter(([, view]) => view).map(([key, view]) => saidSentence(key, view));
-    const verdict = totals && h('section', { class: stoppedAt >= 0 ? 'verdict stopped' : 'verdict', 'aria-label': t.verdict.label },
+    const verdict = totals && h('section', { class: stopped >= 0 ? 'verdict stopped' : 'verdict', 'aria-label': t.verdict.label },
       h('p', { class: 'eyebrow' }, t.verdict.label),
-      h('h2', {}, stoppedAt >= 0 ? t.verdict.stopped(stoppedAt) : t.verdict.everyone),
-      h('p', {}, t.verdict.reached(totals.reach, reactions.length), ' ', t.verdict.balance(totals.glad, totals.sorry)),
+      h('h2', {}, stopped >= 0 ? t.verdict.stopped(stopped) : version.audience ? t.verdict.everyoneAudience : t.verdict.everyone),
+      h('p', {}, version.audience ? t.verdict.reachedAudience(totals.reach, version.audience.size) : t.verdict.reached(totals.reach, reactions.length), ' ', t.verdict.balance(totals.glad, totals.sorry)),
       asked.length > 0 && h('p', {}, asked.join(' ')),
-      stoppedAt >= 0 && h('p', { class: 'dim' }, t.verdict.why));
+      stopped >= 0 && h('p', { class: 'dim' }, t.verdict.why));
     const comparison = previous && h('details', { class: 'compare' }, h('summary', {}, t.compare.title),
       h('div', { class: 'compare-columns' },
         h('article', {}, h('b', {}, `${t.compare.previous} · ${t.version} ${previous.number}`), h('p', {}, previous.text)),
@@ -927,24 +984,25 @@ function postPage(view, post) {
     put(article,
       postHead(post, version.createdAt), tabs,
       h('p', { class: 'post-text' }, version.text),
+      version.audience && h('p', { class: 'audience-line' }, icon('focus', 14), h('span', {}, t.audience.line(version.audience.text), h('span', { class: 'dim' }, ` · ${t.audience.size(version.audience.size)}`))),
       version.options.prices && h('p', { class: 'asked-prices' }, h('span', { class: 'dim' }, t.compose.prices), ...version.options.prices.map((price) => h('span', { class: 'price-tag' }, h('i', {}, version.options.currency), t.n(price)))),
-      !post.listed && h('p', { class: 'hint' }, version.unlisted.length ? t.blocks.unlisted : t.blocks.hiddenByAuthor),
-      verdict, checksBlock(), delta, comparison, h('div', { class: 'post-actions' }, totals && h('button', { type: 'button', class: 'quiet', onclick: () => showCard(post, version, reactions) }, icon('picture', 16), h('span', {}, t.card.open)), share, edit), editor);
+      !post.listed && h('p', { class: 'hint' }, version.unlisted.length ? t.blocks.unlisted : version.audience?.unlisted?.length ? t.blocks.unlistedAudience : t.blocks.hiddenByAuthor),
+      verdict, checksBlock(), delta, comparison, h('div', { class: 'post-actions' }, totals && h('button', { type: 'button', class: 'quiet', onclick: () => showCard(post, version, reactions, members) }, icon('picture', 16), h('span', {}, t.card.open)), share, edit, withAudience), editor);
   }
 
   /** How far the text went: a step per wave, then the follow-up question. */
   function paintStepper() {
-    let reach = 0;
-    const stoppedAt = version.waves.findIndex((wave, index) => !wave.travels && index < WAVES.length - 1);
-    const steps = WAVES.map((wave, index) => {
-      reach = Math.min(CROWD, reach + (wave.size === Infinity ? CROWD : wave.size));
+    const reaches = reachOf(version);
+    const last = reaches.length - 1;
+    const stopped = stoppedAt(version);
+    const steps = reaches.map((reach, index) => {
       const done = version.waves[index];
       const running = version.stage?.kind === 'wave' && version.stage.index === index;
-      const state = done ? (done.travels || index === WAVES.length - 1 ? 'passed' : 'stopped') : running ? 'running' : stoppedAt >= 0 || (version.state === 'done' && !done) ? 'never' : 'pending';
+      const state = done ? (done.travels || index === last ? 'passed' : 'stopped') : running ? 'running' : stopped >= 0 || (version.state === 'done' && !done) ? 'never' : 'pending';
       return h('li', { class: `step ${state}`, title: done ? t.run.moodNote(`${done.mood > 0 ? '+' : ''}${done.mood.toFixed(2)}`) : null, onpointerenter: done && (() => grid.focusOn(Uint8Array.from(waves, (wave) => (wave === index + 1 ? 1 : 0)))), onpointerleave: done && (() => focusGroup(null)) },
-        h('i', { class: 'step-dot' }), h('b', {}, reach === CROWD ? t.post.everyone : t.n(reach)),
+        h('i', { class: 'step-dot' }), h('b', {}, index === last ? t.post.everyone : t.n(reach)),
         // What the wave decided, in words; the number behind it is in the tooltip. After the last wave there is nothing to decide.
-        h('span', { class: 'step-note' }, done && index < WAVES.length - 1 ? (done.travels ? t.run.went : t.run.stayed) : ' '));
+        h('span', { class: 'step-note' }, done && index < last ? (done.travels ? t.run.went : t.run.stayed) : ' '));
     });
     if (preset.followUp) {
       const running = version.stage?.kind === 'followup';
@@ -979,7 +1037,7 @@ function postPage(view, post) {
     }
     if (only || singled) grid.focusOn(onlyMask()); // people who arrive later join the group that is singled out
     singled = Boolean(only);
-    grid.describe(t.post.picture(totals));
+    grid.describe(`${t.post.picture(totals)}${members ? ` ${t.audience.picture}` : ''}`);
     return totals;
   }
 
@@ -1006,8 +1064,10 @@ function postPage(view, post) {
 
   function paintBlocks() {
     const totals = counters(post.preset, keys, reactions);
-    const all = segments(post.preset, keys, reactions, crowdOf(post.pool));
-    const views = { stopped: LOOKS.stopped, glad: LOOKS.glad, ...(totals.sorry >= 10 ? { sorry: LOOKS.sorry } : {}), shown: LOOKS.scrolled };
+    // With an audience the groups are counted among its members: nobody else could see the text.
+    const all = segments(post.preset, keys, reactions, inAudience(crowdOf(post.pool), members));
+    const people = version.audience?.size ?? reactions.length;
+    const views = { stopped: LOOKS.stopped, glad: LOOKS.glad, ...(totals.sorry >= 10 ? { sorry: LOOKS.sorry } : {}), shown: LOOKS.scrolled, ...(version.audience ? { described: LOOKS.scrolled } : {}) };
     if (!views[audience]) audience = 'stopped';
     const audienceBody = h('div', {});
     const audienceTabs = h('div', { class: 'seg' });
@@ -1017,6 +1077,13 @@ function postPage(view, post) {
         const rows = Object.entries(version.scores).sort((a, b) => b[1] - a[1]).slice(0, 7).map(([group, score]) => ({ label: groupLabel(...group.split(':')), value: score, text: score.toFixed(2), color: '#7c879b', group: group.split(':') }));
         return put(audienceBody, h('h3', {}, t.blocks.titles.shown), h('p', { class: 'hint' }, t.blocks.shownNote), bars(rows, focusGroup));
       }
+      if (audience === 'described') {
+        // How Jev read the author's words: the groups that count in each part the description names, and the parts it leaves open.
+        const { parts, scores } = version.audience;
+        const rows = Object.entries(parts).flatMap(([part, values]) => values.map((value) => ({ label: groupLabel(part, value), value: scores[`${part}:${value}`] ?? 0, text: (scores[`${part}:${value}`] ?? 0).toFixed(2), note: t.audience.part[part], color: '#7c879b', group: [part, value] })));
+        const open = Object.keys(t.audience.partWord).filter((part) => !parts[part]).map((part) => t.audience.partWord[part]);
+        return put(audienceBody, h('h3', {}, t.blocks.titles.described), h('p', { class: 'hint' }, t.blocks.describedNote(version.audience.size)), bars(rows, focusGroup), open.length > 0 && h('p', { class: 'dim' }, t.audience.open(t.and(open))));
+      }
       // A text that worked on everybody alike has no group above the crowd; the biggest groups are shown then, not an empty card.
       const standing = topSegments(all, audience, 7);
       const shownSegments = standing.length ? standing : biggestSegments(all, audience, 7);
@@ -1025,7 +1092,7 @@ function postPage(view, post) {
       const annoyed = audience === 'sorry' && mostAnnoyed(all, totals, post.preset);
       put(audienceBody,
         h('h3', {}, t.blocks.titles[audience]),
-        h('p', { class: 'hint' }, standing.length ? t.blocks.segmentNote(t.blocks.tabs[audience].toLowerCase(), percent(totals[audience] / reactions.length)) : t.blocks.alike),
+        h('p', { class: 'hint' }, standing.length ? t.blocks[version.audience ? 'segmentNoteAudience' : 'segmentNote'](t.blocks.tabs[audience].toLowerCase(), percent(totals[audience] / people)) : t.blocks.alike),
         annoyed && h('p', { class: 'hint' }, t.blocks.annoyedGroup(groupLabel(annoyed.attribute, annoyed.value), annoyed.sorry, annoyed.reached)),
         rows.length ? bars(rows, focusGroup) : h('p', { class: 'dim' }, t.blocks.nobody));
     };
@@ -1105,7 +1172,7 @@ function postPage(view, post) {
     while (stage && alive) {
       version.stage = stage;
       paintStepper();
-      status.textContent = stage.kind === 'wave' ? t.run.wave(stage.index, reachAfter(stage.index)) : t.run.followup(stage.people);
+      status.textContent = stage.kind === 'wave' ? t.run.wave(stage.index, reachOf(version)[stage.index]) : t.run.followup(stage.people);
       const queue = [...Array(stage.batches).keys()];
       const drawn = [];
       const lane = async () => {
@@ -1125,12 +1192,12 @@ function postPage(view, post) {
       await Promise.all(Array.from({ length: BATCHES_AT_ONCE }, lane));
       if (!alive) return;
       // The close after the last stage asks the town a few more questions, and takes a few seconds.
-      if (stage.kind === 'followup' || (!preset.followUp && (stage.index === WAVES.length - 1 || !travels(post.preset, drawn)))) status.textContent = t.run.asking;
+      if (stage.kind === 'followup' || (!preset.followUp && (stage.index === reachOf(version).length - 1 || !travels(post.preset, drawn)))) status.textContent = t.run.asking;
       const closed = await closeStage();
       if (!closed) return;
       if (closed.wave && stage.kind === 'wave') {
         version.waves = [...version.waves.filter((wave) => wave.index !== closed.wave.index), closed.wave];
-        status.textContent = `${t.run.wave(stage.index, reachAfter(stage.index))} · ${closed.done || closed.stage.kind !== 'wave' ? t.run.stops : t.run.travels}`;
+        status.textContent = `${t.run.wave(stage.index, reachOf(version)[stage.index])} · ${closed.done || closed.stage.kind !== 'wave' ? t.run.stops : t.run.travels}`;
       }
       if (closed.done) return finish(closed.version, true);
       stage = closed.stage;
@@ -1171,7 +1238,7 @@ function postPage(view, post) {
       // The follow-up answers are written when the check closes; what is on the screen stays as it is.
       const stored = await fetchCrowd(post, done.number, true).catch(() => null);
       if (stored) ({ waves, answers } = stored);
-      crowdCache.set(`${post.id}/${done.number}`, { reactions, waves, answers });
+      crowdCache.set(crowdPath(post, done.number, planesOf(post)), { reactions, waves, answers, ...(members ? { audience: members } : {}) });
     }
     if (!alive) return;
     const replay = h('button', { type: 'button', class: 'link', onclick: () => {
@@ -1192,7 +1259,7 @@ function postPage(view, post) {
         ? h('a', { class: 'back', href: '/', onclick: (event) => (event.preventDefault(), history.back()) }, icon('back', 18), t.nav.back)
         : h('a', { class: 'back', href: '/', 'data-link': true }, icon('back', 18), t.post.back),
       article),
-    h('aside', { class: 'map-col' }, h('div', { class: 'map-in' }, stepper, h('div', { class: 'grid-wrap' }, gridHost, labels), status, stats, legend())),
+    h('aside', { class: 'map-col' }, h('div', { class: 'map-in' }, stepper, h('div', { class: 'grid-wrap' }, gridHost, labels), status, stats, legend(Boolean(post.audience)))),
     h('section', { class: 'post-rest' }, chips, blocks)));
   paintArticle();
   paintStepper();
@@ -1201,10 +1268,12 @@ function postPage(view, post) {
   (async () => {
     try {
       if (version.state === 'done') {
-        ({ reactions, waves, answers } = await fetchCrowd(post, version.number));
+        ({ reactions, waves, answers, audience: members = null } = await fetchCrowd(post, version.number, false, planesOf(post)));
+        grid.setAudience(members);
         await finish(version, false, grid.replay(post.preset, reactions, waves));
       } else {
-        ({ reactions, waves, answers } = await fetchCrowd(post, version.number, true));
+        ({ reactions, waves, answers, audience: members = null } = await fetchCrowd(post, version.number, true, planesOf(post)));
+        grid.setAudience(members);
         grid.setAll(post.preset, reactions);
         paintCounters(0);
         await (post.mine ? drive() : watch());
@@ -1298,15 +1367,17 @@ function activityList(pool, id, who) {
 }
 
 /** The card of a finished post, in a dialog: the picture, and the ways to take it away. */
-async function showCard(post, version, reactions) {
+async function showCard(post, version, reactions, audience = null) {
   const totals = version.summary.counters;
   const kinds = Object.entries(PRESETS[post.preset].reactions);
   const spreadsKey = kinds.find(([, reaction]) => reaction.spreads)?.[0];
-  const stoppedAt = version.waves.findIndex((wave, index) => !wave.travels && index < WAVES.length - 1);
+  const stopped = stoppedAt(version);
+  const size = version.audience?.size ?? reactions.length;
+  const sawWords = version.audience ? t.card.sawAudience(size) : t.card.saw(size);
   const canvas = await drawCard({
     text: version.text, by: post.nickname === 'anonymous' ? t.compose.anonymous : post.nickname, kind: t.presets[post.preset].name,
-    presetId: post.preset, reactions, reach: t.n(totals.reach), reachCount: totals.reach, size: reactions.length,
-    reachWords: t.card.saw(reactions.length), headline: stoppedAt >= 0 ? t.verdict.stopped(stoppedAt) : t.verdict.everyone,
+    presetId: post.preset, reactions, audience, reach: t.n(totals.reach), reachCount: totals.reach, size,
+    reachWords: sawWords, headline: stopped >= 0 ? t.verdict.stopped(stopped) : version.audience ? t.verdict.everyoneAudience : t.verdict.everyone,
     counters: [['stopped', totals.stopped, t.counters.stopped], ['glad', totals.glad, t.counters.glad], ['spreads', totals.byReaction?.[spreadsKey] ?? 0, reactionWord(spreadsKey)], ['sorry', totals.sorry, t.counters.sorry]]
       .map(([look, value, label]) => ({ look, value: t.n(value), label })),
     address: `${location.host}/p/${post.id}`,
@@ -1315,7 +1386,7 @@ async function showCard(post, version, reactions) {
   const address = URL.createObjectURL(blob);
   const file = new File([blob], `jevtown-${post.id}.png`, { type: 'image/png' });
   const dialog = h('dialog', { class: 'card-dialog', 'aria-label': t.card.open, onclose: () => (URL.revokeObjectURL(address), dialog.remove()), onclick: (event) => event.target === dialog && dialog.close() },
-    h('img', { src: address, alt: `${t.n(totals.reach)} ${t.card.saw(reactions.length)}. ${clip(version.text, 140)}`, width: 1080, height: 1350 }),
+    h('img', { src: address, alt: `${t.n(totals.reach)} ${sawWords}. ${clip(version.text, 140)}`, width: 1080, height: 1350 }),
     h('div', { class: 'card-actions' },
       navigator.canShare?.({ files: [file] }) && h('button', { type: 'button', class: 'primary', onclick: () => navigator.share({ files: [file], url: `${location.origin}/p/${post.id}` }).catch(() => {}) }, t.card.share),
       h('a', { class: navigator.canShare?.({ files: [file] }) ? 'quiet' : 'primary', href: address, download: file.name }, t.card.download),

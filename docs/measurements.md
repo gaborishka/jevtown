@@ -261,3 +261,24 @@ Taken out:
 Is it clear what to do next (right and clear 14 of 14) and does it have a concrete number, name or example (18 of 18) stay for every preset but the headline, which keeps only the second.
 
 The closing questions cost 190 to 360 tokens a person, so a post whose three questions each go to 100 people adds about 76,000 tokens, $0.003.
+
+## An audience described in words
+
+`npm run probe -- audience`, run on 2026-09-22: eight descriptions, each rated twice, 23 requests, $0.009. For a description that fits, Jev was then asked person by person, with the description as the state, whether each of 100 members, 100 near misses (people who fit every counting part but one) and 200 others is one of the people it is about. The share of members it says yes to is the precision; recall is estimated from how many outside it says yes to.
+
+| Description | Parts that count | Fit, first and second reading | Members Jev says fit | Near misses it says fit | Recall |
+|---|---|---|---|---|---|
+| people who work in IT and are into startups (en) | work: IT; interests: programming, startups, small business | 279, then 237 | 70% | 11% | about 41% |
+| tech founders of early-stage B2B SaaS (en) | work: business | 1,024 both times | 0% | 0% | none |
+| people over 60 (en) | age: over 60 | 1,398 both times | 100% | 0% | about 100% |
+| parents of toddlers (en) | none: age named, no group scored | refused, `no_fit` | | | |
+| пенсіонери, які мають город (uk) | work: retired; interests: gardening, summer house | 174 both times | 96% | 34% | about 21% |
+| студенти-айтівці (uk) | work: student | 650 both times | 77% | 2% | about 73% |
+| left-handed people (en) | none | refused, `no_fit`, as expected | | | |
+| everybody (en) | none | refused, `no_fit`, as expected | | | |
+
+Seven of the eight read the same parts the second time. The one that did not, IT and startups, kept work and changed the interests that count, so its audience moved from 279 to 237.
+
+Where the town has the words, the audience holds: over 60, students, pensioners with a garden. It is narrower than the description where Jev leaves a part out ("студенти-айтівці" became students, not IT students) or where people just outside it fit too (Jev said yes to a third of the near misses for "pensioners with a garden").
+
+Where the town lacks the words, the check runs on the wrong people. The town has no founders, no company stage and no B2B, so "tech founders" became the 1,024 people who work in business, and Jev itself said none of them is a tech founder. The Audience tab shows the part that counted; the site does not refuse such a description yet.
