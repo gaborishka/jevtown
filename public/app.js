@@ -7,9 +7,10 @@ import { createGrid, drawStill } from './grid.js';
 import { createShowcase } from './showcase.js';
 import { drawCard } from './card.js';
 import { crowd, poolFor, interestHome, GRID, CROWD } from './shared/personas.js';
-import { PRESETS, LOOKS, lookOf, priceLadder } from './shared/presets.js';
-import { counters, segments, topSegments, biggestSegments, rankedAnswers, demandCurve } from './shared/summary.js';
-import { WAVES } from './shared/feed.js';
+import { PRESETS, LOOKS, REASONS, LISTS, lookOf, questionOfList, priceLadder } from './shared/presets.js';
+import { counters, segments, topSegments, biggestSegments, mostAnnoyed, rankedAnswers, demandCurve, voicesOf, listView, whySplit, readCheck, DRAIN_NOTE_FROM } from './shared/summary.js';
+import { checksFor } from './shared/requests.js';
+import { travels, WAVES } from './shared/feed.js';
 import { unit } from './shared/rng.js';
 import { CARDS, CARD } from './shared/quiz.js';
 import { residentsOf, pickCards, scores, QUIZ_REACTIONS, TUNE_CARDS, TEST_CARDS, NAME_CHARS, PLACE_CHARS, ABOUT_CHARS, MAX_INTERESTS } from './shared/resident.js';
@@ -24,6 +25,8 @@ const TICKER_EVERY_MS = 2800;
 const TICKER_LINES = 4;
 const MAX_CHARS = 2000;
 const STALE_RUN_MS = 10 * 60 * 1000; // the Worker gives up on a check after this long, and so does a visitor watching it
+const ASKING_EVERY_MS = 5000;
+const ASKING_WAIT_MS = 3 * 60 * 1000; // another close holds the asking for two minutes at most (worker/town.js:ASKING_MS)
 
 /** localStorage that never throws: with site data blocked the page must still open. */
 const store = {
@@ -272,37 +275,20 @@ function answerWords(presetId, options, byte, reaction = null) {
 }
 
 /**
- * People to quote under a post: a seeded shuffle of those who reacted, the rarer reactions first.
- * → [{ id, reaction, look }]
+ * Who answered what when the town was asked at the end of a check: the first of these lists that
+ * holds a person gives their answer. → Map(personId → { list, id })
  */
-function voicesOf(postId, presetId, reactions, only = null) {
-  const keys = Object.keys(PRESETS[presetId].reactions);
-  const turn = ['spreads', 'sorry', 'glad', 'stopped']; // the rare reactions speak first: they are the interesting ones
-  const keep = only ? 400 : 60; // per reaction; a few thousand objects per card of the feed would be a waste
-  const byReaction = new Map();
-  for (let id = 0; id < reactions.length; id++) {
-    if (!reactions[id]) continue;
-    const reaction = keys[reactions[id] - 1];
-    const look = lookOf(presetId, reaction);
-    if (only ? reaction !== only : !turn.includes(look)) continue;
-    let group = byReaction.get(reaction);
-    if (!group) byReaction.set(reaction, (group = { look, total: 0, people: [] }));
-    group.total += 1;
-    group.people.push({ id, reaction, look, order: unit('voice', postId, id) });
-    if (group.people.length > keep * 2) group.people = group.people.sort((a, b) => a.order - b.order).slice(0, keep);
+function answeredBy(said) {
+  const by = new Map();
+  for (const list of ['scrolled', 'sorry', 'hook', 'comment']) {
+    for (const [answer, ids] of Object.entries(said?.picks?.[list] ?? {})) for (const id of ids) if (!by.has(id)) by.set(id, { list, id: answer });
   }
-  const groups = [...byReaction.values()].sort((a, b) => turn.indexOf(a.look) - turn.indexOf(b.look));
-  for (const group of groups) group.people = group.people.sort((a, b) => a.order - b.order).slice(0, keep);
-  // Two of each reaction, then two more of each: no reaction drowns the others because it is ten times as common.
-  const found = [];
-  for (let round = 0; found.length < groups.reduce((sum, group) => sum + group.people.length, 0); round++) {
-    for (const group of groups) found.push(...group.people.slice(round * 2, round * 2 + 2));
-  }
-  found.total = groups.reduce((sum, group) => sum + group.total, 0);
-  return found;
+  return by;
 }
+const saidWords = (answer) => answer && t.said.labels[questionOfList(answer.list)]?.[answer.id];
 
-function voice(pool, presetId, options, entry, answers, { tag = 'li' } = {}) {
+/** A person quoted under a post. `reply` is their answer when the town was asked, in words: it follows what they did. */
+function voice(pool, presetId, options, entry, answers, { tag = 'li', reply = null } = {}) {
   const who = whoIs(pool, entry.id);
   if (!who) return null;
   const answer = answerWords(presetId, options, answers?.[entry.id], entry.reaction);
@@ -312,7 +298,7 @@ function voice(pool, presetId, options, entry, answers, { tag = 'li' } = {}) {
       personaAvatar(who, entry.look),
       h('span', { class: 'voice-body' },
         h('span', { class: 'voice-who' }, h('b', {}, personaTitle(who)), h('span', { class: 'dim' }, ` · ${personaLine(who)}`)),
-        h('span', { class: 'voice-did' }, h('em', { style: `--c:${LOOKS[entry.look === 'hollow' ? 'scrolled' : entry.look]}` }, reactionWord(entry.reaction, who)), said && h('span', { class: 'voice-said' }, ' · ', ...said)))));
+        h('span', { class: 'voice-did' }, h('em', { style: `--c:${LOOKS[entry.look === 'hollow' ? 'scrolled' : entry.look]}` }, reactionWord(entry.reaction, who)), reply && ` · ${reply}`, said && h('span', { class: 'voice-said' }, ' · ', ...said)))));
 }
 
 // -- the composer
@@ -823,7 +809,7 @@ function home(view, restoreY = 0) {
 
 function bars(rows, onFocus) {
   const most = Math.max(...rows.map((row) => row.value), 1e-9);
-  return h('ul', { class: 'bars' }, ...rows.map((row, index) => h('li', { class: row.flag ? 'flagged' : '', style: `--i:${index}`, onpointerenter: row.group && (() => onFocus?.(row.group)), onpointerleave: row.group && (() => onFocus?.(null)) },
+  return h('ul', { class: 'bars' }, ...rows.map((row, index) => h('li', { class: [row.flag && 'flagged', row.lead && 'lead'].filter(Boolean).join(' '), style: `--i:${index}`, onpointerenter: row.group && (() => onFocus?.(row.group)), onpointerleave: row.group && (() => onFocus?.(null)) },
     h('span', { class: 'bar-label' }, row.label), h('span', { class: 'bar-value' }, row.text),
     h('span', { class: 'bar' }, h('i', { style: `--w:${Math.max(2, (row.value / most) * 100)}%;background:${row.color ?? LOOKS.stopped}` })),
     row.note && h('span', { class: 'bar-note' }, row.note))));
@@ -852,6 +838,8 @@ function postPage(view, post) {
   let only = null; // the reaction picked among the chips: the map and the voices show these people alone
   let singled = false; // whether the map is showing that group now
   let audience = 'stopped';
+  let townTab = null; // the list of what the town said that is open; it stays open when the blocks are painted again
+  let answered = answeredBy(version.summary?.said);
   let voicesShown = VOICES_AT_ONCE;
 
   const gridHost = h('div', {});
@@ -870,13 +858,41 @@ function postPage(view, post) {
       const who = whoIs(post.pool, personaId);
       if (!who) return showTip(null);
       const byte = reactions[personaId];
-      showTip([personaTitle(who), personaLine(who), byte ? reactionWord(keys[byte - 1], who) : t.looks.dark, answerWords(post.preset, version.options, answers[personaId])?.text], at);
+      const reply = saidWords(answered.get(personaId));
+      showTip([personaTitle(who), personaLine(who), byte ? `${reactionWord(keys[byte - 1], who)}${reply ? ` · ${reply}` : ''}` : t.looks.dark, answerWords(post.preset, version.options, answers[personaId])?.text], at);
     },
     onPick: (personaId) => go(`/u/${post.pool}/${personaId}`),
   });
 
   const onlyMask = () => only && Uint8Array.from(reactions, (byte) => (byte && keys[byte - 1] === only ? 1 : 0));
   const focusGroup = (group) => grid.focusOn(group ? groupMask(post.pool, ...group) : onlyMask());
+  const focusPeople = (ids) => {
+    if (!ids) return grid.focusOn(onlyMask());
+    const mask = new Uint8Array(reactions.length);
+    for (const id of ids) mask[id] = 1;
+    grid.focusOn(mask);
+  };
+
+  /** One sentence of the result for a list of what the town said: its leading answer, the few about equal, or none. */
+  function saidSentence(key, view) {
+    const words = t.verdict.asked[key][view.lead.kind];
+    if (view.lead.kind === 'none') return words;
+    const labels = view.lead.ids.map((id) => t.said.labels[key === 'hook' ? 'hook' : 'why'][id]);
+    return words(view.lead.kind === 'one' ? labels[0] : t.and(labels));
+  }
+
+  /** Jev's yes or no about the text itself, apart from the town. */
+  function checksBlock() {
+    const rows = checksFor(post.preset).filter(([id]) => version.checks?.[id] != null).map(([id]) => {
+      const value = readCheck(version.checks[id]);
+      const label = typeof t.checks.labels[id] === 'string' ? t.checks.labels[id] : t.checks.labels[id][post.preset];
+      return { id, row: h('li', { class: value === 'unclear' ? 'unclear' : '' }, h('span', {}, label), h('b', {}, t.checks.values[value])) };
+    });
+    return rows.length > 0 && h('section', { class: 'text-checks', 'aria-label': t.checks.title },
+      h('p', { class: 'eyebrow' }, t.checks.title),
+      h('ul', { class: 'checks' }, rows.map((item) => item.row)),
+      h('p', { class: 'hint' }, t.checks.note));
+  }
 
   function paintArticle() {
     const tabs = post.versions.length > 1 && h('div', { class: 'versions' }, ...post.versions.map((candidate) => h('button', { type: 'button', class: candidate.number === version.number ? 'version on' : 'version', onclick: () => go(`/p/${post.id}?v=${candidate.number}`) }, `${t.version} ${candidate.number}`)));
@@ -896,10 +912,13 @@ function postPage(view, post) {
     // What the check showed, in words, before the numbers. The wave that did not let the text through decides the headline, not the balance of reactions.
     const totals = version.state === 'done' && version.summary?.counters;
     const stoppedAt = version.waves.findIndex((wave, index) => !wave.travels && index < WAVES.length - 1);
+    const said = version.summary?.said;
+    const asked = [['passed', 'scrolled'], ['annoyed', 'sorry'], ['hook', 'hook']].map(([key, list]) => [key, listView(said, list, post.preset)]).filter(([, view]) => view).map(([key, view]) => saidSentence(key, view));
     const verdict = totals && h('section', { class: stoppedAt >= 0 ? 'verdict stopped' : 'verdict', 'aria-label': t.verdict.label },
       h('p', { class: 'eyebrow' }, t.verdict.label),
       h('h2', {}, stoppedAt >= 0 ? t.verdict.stopped(stoppedAt) : t.verdict.everyone),
       h('p', {}, t.verdict.reached(totals.reach, reactions.length), ' ', t.verdict.balance(totals.glad, totals.sorry)),
+      asked.length > 0 && h('p', {}, asked.join(' ')),
       stoppedAt >= 0 && h('p', { class: 'dim' }, t.verdict.why));
     const comparison = previous && h('details', { class: 'compare' }, h('summary', {}, t.compare.title),
       h('div', { class: 'compare-columns' },
@@ -910,7 +929,7 @@ function postPage(view, post) {
       h('p', { class: 'post-text' }, version.text),
       version.options.prices && h('p', { class: 'asked-prices' }, h('span', { class: 'dim' }, t.compose.prices), ...version.options.prices.map((price) => h('span', { class: 'price-tag' }, h('i', {}, version.options.currency), t.n(price)))),
       !post.listed && h('p', { class: 'hint' }, version.unlisted.length ? t.blocks.unlisted : t.blocks.hiddenByAuthor),
-      verdict, delta, comparison, h('div', { class: 'post-actions' }, totals && h('button', { type: 'button', class: 'quiet', onclick: () => showCard(post, version, reactions) }, icon('picture', 16), h('span', {}, t.card.open)), share, edit), editor);
+      verdict, checksBlock(), delta, comparison, h('div', { class: 'post-actions' }, totals && h('button', { type: 'button', class: 'quiet', onclick: () => showCard(post, version, reactions) }, icon('picture', 16), h('span', {}, t.card.open)), share, edit), editor);
   }
 
   /** How far the text went: a step per wave, then the follow-up question. */
@@ -979,9 +998,9 @@ function postPage(view, post) {
 
   const voicesBlock = h('section', { class: 'block voices' });
   function paintVoices() {
-    const found = voicesOf(post.id, post.preset, reactions, only);
-    put(voicesBlock, h('h3', {}, t.voices.title, found.length > 0 && h('span', { class: 'count' }, t.voices.count(Math.min(voicesShown, found.length), found.total))), h('p', { class: 'hint' }, t.voices.note),
-      found.length ? h('ul', { class: 'voice-list' }, found.slice(0, voicesShown).map((entry) => voice(post.pool, post.preset, version.options, entry, answers))) : h('p', { class: 'dim' }, t.voices.nobody),
+    const found = voicesOf(post.id, post.preset, reactions, only, answered.size ? (id) => answered.has(id) : null);
+    put(voicesBlock, h('h3', {}, t.voices.title, found.length > 0 && h('span', { class: 'count' }, t.voices.count(Math.min(voicesShown, found.length), found.total))), h('p', { class: 'hint' }, answered.size ? t.voices.noteSaid : t.voices.note),
+      found.length ? h('ul', { class: 'voice-list' }, found.slice(0, voicesShown).map((entry) => voice(post.pool, post.preset, version.options, entry, answers, { reply: saidWords(answered.get(entry.id)) }))) : h('p', { class: 'dim' }, t.voices.nobody),
       found.length > voicesShown && h('button', { type: 'button', class: 'quiet wide', onclick: () => ((voicesShown += VOICES_AT_ONCE * 2), paintVoices()) }, t.voices.more));
   }
 
@@ -1002,13 +1021,42 @@ function postPage(view, post) {
       const standing = topSegments(all, audience, 7);
       const shownSegments = standing.length ? standing : biggestSegments(all, audience, 7);
       const rows = shownSegments.map((segment) => ({ label: groupLabel(segment.attribute, segment.value), value: segment[audience] / segment.size, text: percent(segment[audience] / segment.size), note: `${t.n(segment[audience])} / ${t.n(segment.size)}`, color: views[audience], group: [segment.attribute, segment.value] }));
+      // Shares of whole groups favour the groups the feed showed the text to most; the most annoyed are counted over those who saw it.
+      const annoyed = audience === 'sorry' && mostAnnoyed(all, totals, post.preset);
       put(audienceBody,
         h('h3', {}, t.blocks.titles[audience]),
         h('p', { class: 'hint' }, standing.length ? t.blocks.segmentNote(t.blocks.tabs[audience].toLowerCase(), percent(totals[audience] / reactions.length)) : t.blocks.alike),
+        annoyed && h('p', { class: 'hint' }, t.blocks.annoyedGroup(groupLabel(annoyed.attribute, annoyed.value), annoyed.sorry, annoyed.reached)),
         rows.length ? bars(rows, focusGroup) : h('p', { class: 'dim' }, t.blocks.nobody));
     };
     paintAudience();
     const content = [h('section', { class: 'block' }, audienceTabs, audienceBody)];
+
+    // What the town said when the check closed, a tab per list that has enough answers to show.
+    const said = version.summary?.said;
+    const lists = LISTS.map((list) => [list, listView(said, list, post.preset)]).filter(([, view]) => view);
+    if (lists.length) {
+      if (!lists.some(([list]) => list === townTab)) townTab = lists[0][0];
+      const townTabs = h('div', { class: 'seg' });
+      const townBody = h('div', {});
+      const colorOf = (list, id) => (list === 'scrolled' ? (REASONS[id].audience ? '#7c879b' : LOOKS.stopped) : { sorry: LOOKS.sorry, hook: LOOKS.glad }[list] ?? LOOKS.stopped);
+      const paintTown = () => {
+        put(townTabs, lists.map(([list]) => h('button', { type: 'button', class: list === townTab ? 'on' : '', 'aria-pressed': list === townTab, onclick: () => ((townTab = list), paintTown()) }, t.said.tabs[list])));
+        const view = lists.find(([list]) => list === townTab)[1];
+        const words = t.said.labels[questionOfList(townTab)];
+        const picks = said.picks?.[townTab] ?? {};
+        const rows = view.rows.map((row) => ({ label: words[row.id], value: row.share, text: percent(row.share), color: colorOf(townTab, row.id), lead: view.lead.ids.includes(row.id), group: picks[row.id]?.length ? picks[row.id] : null }));
+        const split = townTab === 'scrolled' && whySplit(view);
+        put(townBody,
+          h('h3', {}, t.said.titles[townTab]),
+          h('p', { class: 'hint' }, [`${t.said.notes[townTab](view.asked)}${t.said.order}`, townTab === 'comment' && t.said.commentNote, t.said.point, view.lead.kind === 'none' ? t.said.flat : t.said.lead].filter(Boolean).join(' ')),
+          bars(rows, focusPeople),
+          view.drain >= DRAIN_NOTE_FROM && h('p', { class: 'dim' }, t.said.drain(percent(view.drain))),
+          split && h('p', { class: 'dim' }, t.said.split(percent(split.text), percent(split.readers))));
+      };
+      paintTown();
+      content.push(h('section', { class: 'block' }, townTabs, townBody));
+    }
 
     const followUp = version.summary?.followUp;
     if (followUp?.asked && post.preset === 'listing') {
@@ -1037,6 +1085,20 @@ function postPage(view, post) {
     return null;
   }
 
+  /** Closes the running stage. While another close is asking the town, the Worker says so: wait and call again. */
+  async function closeStage() {
+    const until = Date.now() + ASKING_WAIT_MS;
+    for (;;) {
+      try {
+        return await api(`/api/wave?post=${post.id}&v=${version.number}`);
+      } catch (error) {
+        if (error.code !== 'asking' || Date.now() > until) throw error;
+        await sleep(ASKING_EVERY_MS);
+        if (!alive) return null;
+      }
+    }
+  }
+
   /** The author's browser runs the check: batches of the stage, then the Worker decides what is next. */
   async function drive() {
     let stage = version.stage;
@@ -1045,6 +1107,7 @@ function postPage(view, post) {
       paintStepper();
       status.textContent = stage.kind === 'wave' ? t.run.wave(stage.index, reachAfter(stage.index)) : t.run.followup(stage.people);
       const queue = [...Array(stage.batches).keys()];
+      const drawn = [];
       const lane = async () => {
         while (queue.length && alive) {
           const batch = await askBatch(stage, queue.shift());
@@ -1052,6 +1115,7 @@ function postPage(view, post) {
             batch.ids.forEach((personaId, i) => {
               reactions[personaId] = batch.reactions[i];
               waves[personaId] = stage.index + 1;
+              drawn.push(keys[batch.reactions[i] - 1]);
             });
             grid.arrive(post.preset, batch.ids, batch.reactions);
             paintCounters(900);
@@ -1060,7 +1124,10 @@ function postPage(view, post) {
       };
       await Promise.all(Array.from({ length: BATCHES_AT_ONCE }, lane));
       if (!alive) return;
-      const closed = await api(`/api/wave?post=${post.id}&v=${version.number}`);
+      // The close after the last stage asks the town a few more questions, and takes a few seconds.
+      if (stage.kind === 'followup' || (!preset.followUp && (stage.index === WAVES.length - 1 || !travels(post.preset, drawn)))) status.textContent = t.run.asking;
+      const closed = await closeStage();
+      if (!closed) return;
       if (closed.wave && stage.kind === 'wave') {
         version.waves = [...version.waves.filter((wave) => wave.index !== closed.wave.index), closed.wave];
         status.textContent = `${t.run.wave(stage.index, reachAfter(stage.index))} · ${closed.done || closed.stage.kind !== 'wave' ? t.run.stops : t.run.travels}`;
@@ -1099,6 +1166,7 @@ function postPage(view, post) {
   async function finish(done, live = false, countMs = 600) {
     post.versions = post.versions.map((candidate) => (candidate.number === done.number ? done : candidate));
     version = done;
+    answered = answeredBy(done.summary?.said);
     if (live) {
       // The follow-up answers are written when the check closes; what is on the screen stays as it is.
       const stored = await fetchCrowd(post, done.number, true).catch(() => null);

@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { persona, crowd, personaLine, withAttributes, poolFor, CROWD } from '../public/shared/personas.js';
+import { interestsAt } from '../public/shared/pack.js';
 import { drawAnswer } from '../public/shared/draw.js';
+import { unit } from '../public/shared/rng.js';
 import { INTEREST, JOB, SHOP } from '../public/shared/vocab.js';
 
 test('a persona is the same person every time', () => {
@@ -57,4 +60,32 @@ test('a follow-up answer is drawn from the probabilities, the same one on every 
   const share = picks.filter((pick) => pick === 'negotiable').length / picks.length;
   assert.ok(share > 0.4 && share < 0.6, `negotiable: ${share}`);
   assert.equal(drawAnswer({}, 'uk', 1, 'p.1'), null);
+});
+
+test('a persona built from the packed interests is the same person', async () => {
+  for (const pool of ['uk', 'en']) {
+    const bytes = new Uint8Array(await readFile(new URL(`../worker/crowd-${pool}.bin`, import.meta.url)));
+    for (let id = 0; id < CROWD; id++) assert.deepEqual(persona(pool, id, interestsAt(bytes, id)), persona(pool, id), `${pool} ${id}`);
+  }
+});
+
+test('each question draws its answers with its own salt, and the follow-up draws as before', () => {
+  const odds = { a: 0.4, b: 0.35, c: 0.25 };
+  const ids = Array.from({ length: 400 }, (_, id) => id);
+  // As drawAnswer drew before questions had salts.
+  const before = (id) => {
+    let left = unit('answer', 'uk', id, 'p.1');
+    for (const [answer, value] of Object.entries(odds)) if ((left -= value) < 0) return answer;
+    return 'c';
+  };
+  assert.deepEqual(ids.map((id) => drawAnswer(odds, 'uk', id, 'p.1')), ids.map(before));
+  const salts = ['answer', 'why', 'hook', 'comment', 'depth'];
+  const drawn = Object.fromEntries(salts.map((salt) => [salt, ids.map((id) => drawAnswer(odds, 'uk', id, 'p.1', salt))]));
+  for (const salt of salts) assert.deepEqual(drawn[salt], ids.map((id) => drawAnswer(odds, 'uk', id, 'p.1', salt)));
+  for (const [i, one] of salts.entries()) {
+    for (const other of salts.slice(i + 1)) {
+      const differ = ids.filter((id) => drawn[one][id] !== drawn[other][id]).length / ids.length;
+      assert.ok(differ > 0.4, `${one} and ${other} differ for ${differ}`);
+    }
+  }
 });

@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { crowd } from '../public/shared/personas.js';
-import { exposure, firstWave, nextWave, travels, mood, WAVES } from '../public/shared/feed.js';
+import { exposure, firstWave, nextWave, travels, mood, gatherAsked, whoIsAsked, asking, anyoneLeft, WAVES } from '../public/shared/feed.js';
 import { residentPersona } from '../public/shared/resident.js';
 import { drawReaction, CONFIDENT_FROM } from '../public/shared/draw.js';
-import { reactionRequest, exposureRequest, exposureScores, questionId } from '../public/shared/requests.js';
-import { priceLadder } from '../public/shared/presets.js';
+import { reactionRequest, exposureRequest, exposureScores, askRequest, openingAnswers, questionId } from '../public/shared/requests.js';
+import { PRESETS, priceLadder, asksFor } from '../public/shared/presets.js';
+import { weightOf } from '../worker/town.js';
 import { rng } from '../public/shared/rng.js';
 
 const people = crowd('uk');
@@ -77,4 +78,81 @@ test('requests carry the text once and one question per persona', () => {
   assert.ok(Object.keys(exposureRequest('product', 'text').questions).some((id) => id.startsWith('shopping:')));
   assert.deepEqual(exposureScores({ 'age:a18': { score: 3 } }), { 'age:a18': 0.75 });
   assert.deepEqual(Object.values(priceLadder([5, 9, 19])).slice(1), ['Buys it only at $5 or less', 'Buys it at $9, not above', 'Buys it even at $19']);
+});
+
+test('the people kept for the closing questions are gathered by what they did, in pick order', () => {
+  const cycle = ['liked', 'scrolled_past', 'blocked', 'cant_tell', 'read'];
+  const reactionOf = (id) => cycle[id % 5];
+  const ids = Array.from({ length: 300 }, (_, id) => id);
+  const gathered = gatherAsked('post', ids, reactionOf);
+  const every = (from) => ids.filter((id) => id % 5 === from);
+  assert.deepEqual(gathered.scrolled, every(1));
+  assert.deepEqual(gathered.sorry, every(2));
+  assert.deepEqual(gathered.glad, every(0));
+  assert.deepEqual(gathered.stopped, ids.filter((id) => [0, 2, 4].includes(id % 5)).slice(0, 100));
+  // A second wave tops the groups up and never reorders them.
+  assert.deepEqual(gatherAsked('post', ids.slice(150), reactionOf, gatherAsked('post', ids.slice(0, 150), reactionOf)), gathered);
+
+  // A resident weighs four: with 98 taken and room for two, they are skipped and a lighter person after them fits.
+  const resident = 10_000;
+  const full = gatherAsked('post', [...Array.from({ length: 98 }, (_, i) => i), resident, 98], () => 'scrolled_past', undefined, weightOf);
+  assert.deepEqual(full.scrolled.slice(-2), [97, 98]);
+  assert.ok(!full.scrolled.includes(resident));
+});
+
+test('why goes to the annoyed first, up to 40, then to those who scrolled past', () => {
+  const range = (from, count) => Array.from({ length: count }, (_, i) => from + i);
+  const groups = (sorry, scrolled) => ({ scrolled, sorry, glad: [1, 2], stopped: [3, 4] });
+  const count = (asked, from, to) => asked.filter((id) => id >= from && id < to).length;
+  const mixed = whoIsAsked('why', groups(range(0, 60), range(1000, 200)));
+  assert.deepEqual(mixed, [...range(0, 40), ...range(1000, 60)]);
+  const few = whoIsAsked('why', groups(range(0, 5), range(1000, 200)));
+  assert.deepEqual([count(few, 0, 1000), count(few, 1000, 2000)], [5, 95]);
+  assert.equal(whoIsAsked('why', groups(range(0, 150), [])).length, 100);
+  const residents = whoIsAsked('why', groups([...range(10_000, 12), ...range(0, 30)], [...range(10_100, 10), ...range(1000, 100)]), weightOf);
+  assert.ok(residents.reduce((sum, id) => sum + weightOf(id), 0) <= 100);
+  const kept = groups([], []);
+  assert.equal(whoIsAsked('hook', kept), kept.glad);
+  assert.equal(whoIsAsked('comment', kept), kept.stopped);
+  assert.deepEqual(asking('post', 'short', groups([], range(1000, 9))).map((asked) => asked.question), []);
+  assert.deepEqual(asking('post', 'short', groups([], range(1000, 10))).map((asked) => asked.question), ['why']);
+});
+
+test('a post is asked why, hook and comment; the other presets why and hook', () => {
+  assert.deepEqual(asksFor('post'), ['why', 'hook', 'comment']);
+  for (const presetId of ['listing', 'product', 'headline']) assert.deepEqual(asksFor(presetId), ['why', 'hook']);
+});
+
+test('a closing question says what the person did, never why, and offers the answers their look has', () => {
+  // Every other person got annoyed, where the preset has a way to.
+  const annoyed = { post: 'blocked', listing: 'scam', headline: 'annoyed' };
+  const batch = people.slice(0, 30);
+  const allCriteria = Object.values(PRESETS).flatMap((preset) => Object.values(preset.reactions).map((reaction) => reaction.criteria));
+  for (const presetId of Object.keys(PRESETS)) {
+    const reactionOf = (id) => (id % 2 && annoyed[presetId]) || 'scrolled_past';
+    const request = askRequest('why', presetId, 'Продам велосипед', batch, reactionOf);
+    assert.deepEqual(request.state, reactionRequest(presetId, 'Продам велосипед', batch).state);
+    for (const [id, question] of Object.entries(request.questions)) {
+      assert.ok(!allCriteria.some((criteria) => question.instructions.includes(criteria)), `${presetId}.${id} quotes a reaction`);
+      assert.equal(Object.keys(question.criteria).at(-1), 'cant_tell');
+      const sorry = reactionOf(Number(id.slice(1))) !== 'scrolled_past';
+      for (const reason of ['not_for_them', 'weak_opening', 'too_long']) assert.equal(reason in question.criteria, !sorry, `${presetId}: ${reason}`);
+      assert.equal('price' in question.criteria, Boolean(PRESETS[presetId].market));
+      assert.equal('disagree' in question.criteria, ['post', 'headline'].includes(presetId));
+    }
+  }
+  const post = askRequest('why', 'post', 'text', batch, (id) => (id % 2 ? 'blocked' : 'scrolled_past'));
+  assert.ok(post.questions.p0.instructions.endsWith('They saw it and went past without stopping. What is the main reason?'));
+  assert.ok(post.questions.p1.instructions.endsWith('They blocked or muted the author. What is the main reason?'));
+  const resident = { ...residentPersona('uk', 0, { name: 'Ніна', gender: 'female', age: 66, job: '', city: '', interests: ['gardening'], temper: 'supporter', budget: 'average', about: '' }), earlier: 'Earlier they said: "yes". ' };
+  assert.match(askRequest('hook', 'post', 'text', [resident], () => 'liked').questions[questionId(resident)].instructions, /Earlier they said: "yes"\. They liked it\. What made them stop\?$/);
+});
+
+test('a text check lands among the checks only; a town with nobody left to reach is done', () => {
+  assert.deepEqual(openingAnswers({ 'check:concrete': { noul: 0.99 }, 'interest:cars': { score: 4 } }), { scores: { 'interest:cars': 1 }, unlisted: [], blocked: [], checks: { concrete: 0.99 } });
+  const town = new Uint8Array(10).fill(1);
+  assert.equal(anyoneLeft(town), false);
+  town[4] = 0;
+  assert.equal(anyoneLeft(town), true);
+  assert.equal(anyoneLeft(town, Uint8Array.from({ length: 10 }, (_, id) => (id === 4 ? 0 : 1))), false);
 });

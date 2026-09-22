@@ -32,3 +32,12 @@ export function unpackCrowd(bytes) {
     };
   });
 }
+
+/**
+ * The three interests of one persona, main one first, read straight from the bytes: building a
+ * persona again is mostly drawing its interests, and the Worker asks about a few hundred at a time.
+ */
+export function interestsAt(bytes, id) {
+  const at = id * BYTES_PER_PERSONA;
+  return [INTERESTS[bytes[at]].id, INTERESTS[bytes[at + 1]].id, INTERESTS[bytes[at + 2]].id];
+}

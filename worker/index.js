@@ -2,22 +2,24 @@
 // outgoing requests and use 10 ms of CPU, so no single request can run a check. Instead the browser
 // drives it: POST /api/check asks Jev whom the text is for and plans the first wave, /api/batch
 // asks Jev about 100 people of the current wave, /api/wave closes the wave and decides whether the
-// text travels further. Every reaction on a page comes from rows this Worker wrote itself; the
-// browser only sets the pace.
+// text travels further; the last close also asks up to four questions of up to 100 people it
+// reached, one request each (town.js). Every reaction on a page comes from rows this Worker wrote
+// itself; the browser only sets the pace.
 import { persona, poolFor, CROWD } from '../public/shared/personas.js';
-import { unpackCrowd } from '../public/shared/pack.js';
+import { unpackCrowd, interestsAt } from '../public/shared/pack.js';
 import { PRESETS, priceLadder } from '../public/shared/presets.js';
 import { reactionRequest, followUpRequest, openingRequest, openingAnswers, questionId, MAX_TEXT_CHARS, UNLISTED, UNLISTED_FROM } from '../public/shared/requests.js';
-import { firstWave, nextWave, mood, travels, WAVES } from '../public/shared/feed.js';
+import { firstWave, nextWave, mood, travels, gatherAsked, anyoneLeft, emptyGathered, WAVES } from '../public/shared/feed.js';
 import { drawReaction, drawAnswer } from '../public/shared/draw.js';
 import { counters } from '../public/shared/summary.js';
 import { ask, pickProvider, PROVIDERS } from '../public/shared/jev.js';
 import { rng, hash32 } from '../public/shared/rng.js';
 import { POOLS } from '../public/shared/vocab.js';
 import { DICTIONARIES } from '../public/i18n.js';
-import { cleanProfile, publicProfile, residentPersona, tenant, lightTenant, quizRequest, profileRequest, earlierWords, topicsOf, likeliest, QUIZ_REACTIONS, TUNE_CARDS, TEST_CARDS, RESIDENT_WEIGHT } from '../public/shared/resident.js';
+import { cleanProfile, publicProfile, residentPersona, tenant, lightTenant, quizRequest, profileRequest, earlierWords, topicsOf, likeliest, QUIZ_REACTIONS, TUNE_CARDS, TEST_CARDS } from '../public/shared/resident.js';
 import { CARD } from '../public/shared/quiz.js';
 import { renderOg } from './og.js';
+import { askTown, weightOf } from './town.js';
 import packedUk from './crowd-uk.bin';
 import packedEn from './crowd-en.bin';
 
@@ -35,9 +37,11 @@ const MOVES_PER_DAY = 3; // residents one address may move in a day
 const MAX_RESIDENTS = 2000; // per crowd: every resident is asked about every post that travels far // a test round is eight requests to Jev at once; they share these retries
 
 const PACKED = { uk: packedUk, en: packedEn };
+const views = {};
 const crowds = {};
+const packedBytes = (pool) => (views[pool] ??= new Uint8Array(PACKED[pool]));
 /** What the feed algorithm reads of every persona; unpacked once per isolate. */
-const lightCrowd = (pool) => (crowds[pool] ??= unpackCrowd(new Uint8Array(PACKED[pool])));
+const lightCrowd = (pool) => (crowds[pool] ??= unpackCrowd(packedBytes(pool)));
 
 /** How many people live in a town now: the 10,000 and every house a visitor ever moved somebody into. */
 const townSize = async (env, pool) => CROWD + ((await env.DB.prepare('SELECT MAX(number) + 1 AS houses FROM residents WHERE pool = ?').bind(pool).first('houses')) ?? 0);
@@ -56,7 +60,7 @@ function batchesOf(ids) {
   let from = 0;
   let weight = 0;
   ids.forEach((id, at) => {
-    const next = id < CROWD ? 1 : RESIDENT_WEIGHT;
+    const next = weightOf(id);
     if (weight + next > PER_REQUEST) {
       cuts.push([from, at]);
       from = at;
@@ -159,7 +163,7 @@ async function handleCheck(request, env, url) {
 
   const pool = post?.pool ?? body.pool ?? poolFor(text);
   const opening = await ask(provider, openingRequest(body.preset, text), { left: RETRIES_PER_BATCH });
-  const { scores, unlisted, blocked } = openingAnswers(opening.answers);
+  const { scores, unlisted, blocked, checks } = openingAnswers(opening.answers);
   if (blocked.length) {
     // Nothing of the text is kept. The question to Jev was paid for and the attempt counts towards the day's limit.
     const attempt = randomId(5);
@@ -182,7 +186,7 @@ async function handleCheck(request, env, url) {
     post
       ? env.DB.prepare('UPDATE posts SET listed = MIN(listed, ?), nickname = ? WHERE id = ?').bind(listed, nickname, id)
       : env.DB.prepare('INSERT INTO posts (id, author, nickname, preset, pool, listed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, author, nickname, body.preset, pool, listed, now),
-    env.DB.prepare('INSERT INTO versions (post, number, text, options, state, plan, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, number, text, JSON.stringify(options), 'running', JSON.stringify({ scores, unlisted, waves: [], current, size }), now),
+    env.DB.prepare('INSERT INTO versions (post, number, text, options, state, plan, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(id, number, text, JSON.stringify(options), 'running', JSON.stringify({ scores, unlisted, checks, waves: [], current, size }), now),
     env.DB.prepare('INSERT INTO batches (post, number, stage, n, result, usd, tokens, day) VALUES (?, ?, ?, 0, NULL, ?, ?, ?)').bind(id, number, 's', opening.usd, opening.tokens, today()),
     env.DB.prepare('INSERT INTO checks (visitor, day, post, created_at) VALUES (?, ?, ?, ?)').bind(visitor, today(), id, now),
   ]);
@@ -192,7 +196,8 @@ async function handleCheck(request, env, url) {
 
 /**
  * The people of a batch as Jev is asked about them. A resident comes with the reactions it was tuned
- * on, the ones nearest to what the post is about.
+ * on, the ones nearest to what the post is about. One of the 10,000 takes its interests from the packed
+ * crowd, which saves most of the time building it takes.
  */
 async function peopleOf(env, version, ids) {
   const numbers = ids.filter((id) => id >= CROWD).map((id) => id - CROWD);
@@ -210,7 +215,7 @@ async function peopleOf(env, version, ids) {
       moved.set(who.id, who);
     }
   }
-  return ids.map((id) => moved.get(id) ?? (id < CROWD ? persona(version.pool, id) : tenant(version.pool, id - CROWD)));
+  return ids.map((id) => moved.get(id) ?? (id < CROWD ? persona(version.pool, id, interestsAt(packedBytes(version.pool), id)) : tenant(version.pool, id - CROWD)));
 }
 
 // GET /api/batch?post=&v=&stage=&n= → the reactions of up to 100 people, drawn and stored.
@@ -259,6 +264,7 @@ async function handleBatch(env, url) {
 }
 
 // GET /api/wave?post=&v= → closes the running stage; answers with the next one, or with the finished version.
+// The last close asks the town first; while another close is asking it answers 409 `asking`, and writes nothing.
 async function handleWave(env, url) {
   const [post, number] = [url.searchParams.get('post'), Number(url.searchParams.get('v'))];
   const version = post && (await readVersion(env, post, number));
@@ -269,6 +275,7 @@ async function handleWave(env, url) {
   const current = plan.current;
   const preset = PRESETS[version.preset];
   const keys = Object.keys(preset.reactions);
+  const { maxWaves, dailyBudget } = settings(env);
   const { results } = await env.DB.prepare('SELECT n, result FROM batches WHERE post = ? AND number = ? AND stage = ?').bind(post, number, stageName(current)).all();
   if (results.length < batchCount(current) * ENOUGH_BATCHES) return refuse('incomplete', `${results.length} of ${batchCount(current)} batches are answered`, 409);
 
@@ -290,8 +297,8 @@ async function handleWave(env, url) {
     }
     const wave = { index: current.index, size: drawn.length, mood: mood(version.preset, drawn), travels: travels(version.preset, drawn) };
     plan.waves.push(wave);
-    const { maxWaves, dailyBudget } = settings(env);
-    const mayGoOn = wave.travels && current.index + 1 < maxWaves && !(dailyBudget && (await spentToday(env)) >= dailyBudget);
+    plan.gathered = gatherAsked(version.preset, current.ids, (id) => keys[reactions[id] - 1], plan.gathered ?? emptyGathered(), weightOf);
+    const mayGoOn = wave.travels && current.index + 1 < maxWaves && anyoneLeft(reactions) && !(dailyBudget && (await spentToday(env)) >= dailyBudget);
     if (mayGoOn) {
       const reached = new Map();
       reactions.forEach((byte, id) => byte && reached.set(id, keys[byte - 1]));
@@ -321,10 +328,15 @@ async function handleWave(env, url) {
     return json({ done: false, wave: plan.waves.at(-1), stage: stageAnswer(next) });
   }
 
+  const town = { db: env.DB, provider: pickProvider(env), peopleOf: (ids) => peopleOf(env, version, ids), isSpent: async () => Boolean(dailyBudget) && (await spentToday(env)) >= dailyBudget };
+  const { said, busy } = await askTown(town, version, plan, reactions, keys);
+  if (busy) return refuse('asking', 'the town is being asked', 409);
+  // After the asking, so the cost and the count of requests include it.
   const cost = await env.DB.prepare('SELECT COALESCE(SUM(usd), 0) AS usd, COALESCE(SUM(tokens), 0) AS tokens, COUNT(*) AS requests FROM batches WHERE post = ? AND number = ?').bind(post, number).first();
   const now = new Date().toISOString();
   const totals = counters(version.preset, keys, reactions);
-  const summary = { counters: totals, followUp: plan.followUp ?? null, usd: cost.usd, tokens: cost.tokens, requests: cost.requests, seconds: (Date.now() - new Date(version.created_at)) / 1000, finishedAt: now };
+  delete plan.asking; // the done write lets the asking go
+  const summary = { counters: totals, followUp: plan.followUp ?? null, said, usd: cost.usd, tokens: cost.tokens, requests: cost.requests, seconds: (Date.now() - new Date(version.created_at)) / 1000, finishedAt: now };
   await env.DB.batch([
     env.DB.prepare("UPDATE versions SET state = 'done', plan = ?, reactions = ?, waves = ?, answers = ?, summary = ? WHERE post = ? AND number = ?").bind(JSON.stringify(plan), reactions, waves, answers, JSON.stringify(summary), post, number),
     env.DB.prepare('UPDATE posts SET version = ?, snippet = ?, reach = ?, stopped = ?, glad = ?, sorry = ?, finished_at = ? WHERE id = ?').bind(number, version.text.replace(/\s+/g, ' ').slice(0, SNIPPET), totals.reach, totals.stopped, totals.glad, totals.sorry, now, post),
@@ -337,7 +349,7 @@ function publicVersion(version, done = []) {
   const { plan } = version;
   return {
     number: version.number, text: version.text, options: version.options, state: version.state, createdAt: version.created_at,
-    scores: plan.scores, unlisted: plan.unlisted ?? [], waves: plan.waves, summary: version.summary ?? null,
+    scores: plan.scores, unlisted: plan.unlisted ?? [], checks: plan.checks ?? null, waves: plan.waves, summary: version.summary ?? null,
     stage: version.state === 'running' && plan.current ? stageAnswer(plan.current, done) : null,
   };
 }
@@ -616,7 +628,12 @@ export default {
       if (posted) return request.method === 'POST' ? await posted(request, env, url) : new Response(null, { status: 405 });
       if (request.method !== 'GET' && request.method !== 'HEAD') return new Response(null, { status: 405 });
       if (path === '/api/batch') return await handleBatch(env, url);
-      if (path === '/api/wave') return await handleWave(env, url);
+      if (path === '/api/wave') {
+        // The last close waits on Jev; it goes on for a while after the tab that asked for it is closed.
+        const closing = handleWave(env, url);
+        ctx.waitUntil(closing.catch(() => {}));
+        return await closing;
+      }
       if (path === '/api/feed') return await handleFeed(env, url);
       if (path === '/api/me') return json(await readMe(env, await authorOf(request)));
       if (path === '/api/residents') return await handleResidents(env);

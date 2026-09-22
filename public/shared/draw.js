@@ -21,12 +21,16 @@ export function drawReaction(probabilities, pool, personaId, versionId) {
   return entries.at(-1)[0];
 }
 
-/** The follow-up answer of one persona, drawn the same seeded way. probabilities: { answer: 0..1 } → answer id, or null. */
-export function drawAnswer(probabilities, pool, personaId, versionId) {
+/**
+ * The answer of one persona to a follow-up or a closing question, drawn the same seeded way.
+ * probabilities: { answer: 0..1 } → answer id, or null. Each question draws with its own salt, so two
+ * questions asked of the same person do not draw alike; the follow-up keeps 'answer'.
+ */
+export function drawAnswer(probabilities, pool, personaId, versionId, salt = 'answer') {
   const entries = Object.entries(probabilities);
   if (!entries.length) return null;
   const total = entries.reduce((sum, [, value]) => sum + value, 0);
-  let left = unit('answer', pool, personaId, versionId) * total;
+  let left = unit(salt, pool, personaId, versionId) * total;
   for (const [answer, value] of entries) {
     left -= value;
     if (left < 0) return answer;

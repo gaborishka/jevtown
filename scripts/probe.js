@@ -1,12 +1,16 @@
 // Step 0 of the plan: measurements with a real key, before any interface exists.
 //   node --env-file=.env.local scripts/probe.js attributes batch presets crowd waves
+// `town` measures what the town is asked when a check closes and the text checks; its gates decide which stay.
+// It is paid, about $0.22, and stops at PROBE_BUDGET_USD like every step.
 // Raw numbers go to data/probe/*.json (not committed); the conclusions are in docs/measurements.md.
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { crowd, withAttributes } from '../public/shared/personas.js';
-import { PRESETS, priceLadder } from '../public/shared/presets.js';
-import { reactionRequest, followUpRequest, exposureRequest, exposureScores, questionId } from '../public/shared/requests.js';
+import { PRESETS, priceLadder, questionOfList, CANT_TELL } from '../public/shared/presets.js';
+import { reactionRequest, followUpRequest, exposureRequest, exposureScores, openingRequest, openingAnswers, questionId, TEXT_CHECKS } from '../public/shared/requests.js';
 import { pickProvider, ask, eachLimit } from '../public/shared/jev.js';
-import { firstWave, nextWave, travels, mood, exposure, WAVES } from '../public/shared/feed.js';
+import { firstWave, nextWave, travels, mood, exposure, gatherAsked, asking, WAVES, ASK_WEIGHT, MIN_ASKED } from '../public/shared/feed.js';
+import { askQuestion, listsOf } from '../public/shared/check.js';
+import { listView, whySplit } from '../public/shared/summary.js';
 import { drawReaction } from '../public/shared/draw.js';
 import { rng } from '../public/shared/rng.js';
 
@@ -353,7 +357,266 @@ async function memory() {
   await save('memory', report);
 }
 
-const steps = { attributes, batch, presets, crowd: wholeCrowd, waves, calibrate, throughput, 'first-waves': firstWaves, memory };
+// 9. Asking the town when a check closes (presets.js:ASKS) and reading the text (requests.js:TEXT_CHECKS).
+// A asks each text's first wave as the site would, B the same fixed people about every text, C the
+// text checks alone. Jev leans towards the first-listed answer, so every
+// closing question goes out in both orders. The gates at the end decide which questions and checks stay.
+const PLAIN = {
+  product_plain: { preset: 'product', pool: 'en', text: 'Wool socks for running. $24 a pair.' },
+  headline_plain: { preset: 'headline', pool: 'en', text: 'Some thoughts about my mornings' },
+};
+/** A windy opening that pushes what is for sale out of the first sentence. */
+const PAD = 'Давно збирався написати про одну річ, але все не було часу, а сьогодні нарешті сів і вирішив поділитися. ';
+const ASK_ADDED = {
+  post_dev: ' Напишіть у коментарях: вам асистент пришвидшив роботу чи ні?',
+  post_broad: ' Порахуйте свої кавові витрати й напишіть, скільки вийшло.',
+  product_socks: ' Order at the link in the profile, delivery in 3 days.',
+};
+const LISTING_CUT = 'iPhone 13, 128 ГБ, синій. Стан акумулятора 86%, не ремонтувався, весь час у чохлі та зі склом. У комплекті коробка й кабель. 14 000 грн.';
+/** What every fixed person of B did: a glad reaction, so hook is asked of them all. */
+const FIXED_DID = { post: 'liked', listing: 'saved', product: 'cart', headline: 'clicked' };
+const ORDERS = ['listed', 'reversed'];
+
+/** The texts of C with the answer each check should give. → [{ check, yes, name, preset, pool, text }] */
+function checkCases() {
+  const known = { ...DULL, ...TEXTS };
+  const as = (name, change = '', text = known[name].text) => ({ ...known[name], name: change ? `${name}, ${change}` : name, text });
+  const cases = [];
+  const add = (check, yes, ...texts) => texts.forEach((one) => cases.push({ check, yes, ...one }));
+  add('concrete', false, as('morning'), as('vague'), as('listing_vague'));
+  add('concrete', true, ...Object.keys(TEXTS).map((name) => as(name)));
+  add('point_first', true, as('listing_iphone'));
+  add('point_first', false, as('listing_iphone', 'padded', PAD + known.listing_iphone.text));
+  add('ask', false, as('post_dev'), as('post_broad'), as('listing_iphone', 'cut', LISTING_CUT), as('listing_vague'), as('product_socks'));
+  add('ask', true, ...Object.entries(ASK_ADDED).map(([name, words]) => as(name, 'with an ask', known[name].text + words)), as('listing_iphone'));
+  return cases;
+}
+
+/** The opening request with nothing but its text checks, to see whether the questions around them matter. */
+function checksOnly(presetId, text) {
+  const request = openingRequest(presetId, text);
+  request.questions = Object.fromEntries(Object.entries(request.questions).filter(([id]) => id.startsWith('check:')));
+  return request;
+}
+
+/** Every question's answers listed backwards, the drain still last. */
+function backwards(request) {
+  for (const question of Object.values(request.questions)) {
+    const { [CANT_TELL]: drain, ...real } = question.criteria;
+    question.criteria = { ...Object.fromEntries(Object.entries(real).reverse()), [CANT_TELL]: drain };
+  }
+  return request;
+}
+
+/** One closing question asked in both orders at once; each side keeps Jev's answers per person. */
+async function inBothOrders(question, asked) {
+  const sides = await Promise.all(ORDERS.map(async (order) => {
+    let answers;
+    const result = await askQuestion(async (request) => {
+      const sent = await send(order === 'reversed' ? backwards(request) : request);
+      answers = sent.answers;
+      return sent;
+    }, question, asked);
+    return { ...result, answers };
+  }));
+  return Object.fromEntries(ORDERS.map((order, i) => [order, sides[i]]));
+}
+
+/** A list as the page reads it (summary.js:listView), its drain kept even when too few answered for the page. */
+function readList(part, list, presetId) {
+  const stored = part.lists[list];
+  if (!stored) return null;
+  const drain = round((stored.totals[CANT_TELL] ?? 0) / stored.asked, 2);
+  const view = listView({ lists: { [list]: stored } }, list, presetId);
+  if (!view) return { asked: stored.asked, drain };
+  return {
+    asked: view.asked, real: round(view.real, 1), drain,
+    shares: Object.fromEntries(view.rows.map((row) => [row.id, round(row.share)])),
+    top: view.rows.slice(0, 3).map((row) => `${row.id} ${round(row.share, 2)}`),
+    lead: view.lead,
+    ...(list === 'scrolled' && { text_share: round(whySplit(view).text) }),
+  };
+}
+const bothLists = (sides, list, presetId) => {
+  const [listed, reversed] = ORDERS.map((order) => readList(sides[order].part, list, presetId));
+  return { listed, reversed, lead_changes: listed?.lead && reversed?.lead ? String(listed.lead.ids) !== String(reversed.lead.ids) : null };
+};
+const sideLine = (side) => (side?.top ? `${side.asked} asked, ${side.real} real, drain ${side.drain}: ${side.top.join(', ')}` : side ? `${side.asked} asked, drain ${side.drain}, under ten real` : 'no answer');
+const topOf = (side) => (side?.shares ? Object.keys(side.shares)[0] : null);
+
+function shuffled(items, random) {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+/** How far apart two random halves of the same people answer: the noise a difference between texts must beat. */
+function halvesApart(answers, ids) {
+  const sharesOf = (half) => {
+    const totals = {};
+    for (const id of half) for (const [answer, value] of Object.entries(answers[questionId({ id })]?.probabilities ?? {})) if (answer !== CANT_TELL) totals[answer] = (totals[answer] ?? 0) + value;
+    const real = Object.values(totals).reduce((sum, value) => sum + value, 0);
+    return Object.fromEntries(Object.entries(totals).map(([answer, value]) => [answer, value / real]));
+  };
+  const mixed = shuffled(ids, rng(5));
+  return round(distance(sharesOf(mixed.slice(0, mixed.length >> 1)), sharesOf(mixed.slice(mixed.length >> 1))));
+}
+
+/** A text's opening request and first wave as the site runs them. → { checks, wave, reactionOf, gathered } */
+async function firstWaveOf({ preset, pool, text }) {
+  const { scores, checks } = openingAnswers((await send(openingRequest(preset, text))).answers);
+  const wave = firstWave(crowdOf(pool), scores, preset, rng(11));
+  const asked = await askCrowd(preset, text, wave, { perRequest: 100, atOnce: 6 });
+  const reactions = new Map(wave.map((who) => [who.id, drawReaction(asked.probabilities.get(who.id) ?? {}, pool, who.id, 'probe')]));
+  const reactionOf = (id) => reactions.get(id);
+  return { checks, wave, reactionOf, gathered: gatherAsked(preset, wave.map((who) => who.id), reactionOf) };
+}
+
+async function town() {
+  const report = { site: {}, not_for_them: {}, drain_by_temper: {}, fixed: {}, checks: [] };
+  const sites = {};
+  const drains = { lurker: [], rest: [] };
+
+  // A. As the site asks: the first wave's people in pick order, and why of a random 100 of its scrollers.
+  for (const [name, { preset, pool, text }] of Object.entries({ ...DULL, ...TEXTS })) {
+    const site = (sites[name] = await firstWaveOf({ preset, pool, text }));
+    const people = crowdOf(pool);
+    const about = (ids) => ({ presetId: preset, text, people: ids.map((id) => people[id]), reactionOf: site.reactionOf, pool, versionId: 'probe' });
+    const scrollers = site.wave.map((who) => who.id).filter((id) => {
+      const reaction = PRESETS[preset].reactions[site.reactionOf(id)];
+      return reaction && !reaction.stopped && !reaction.hollow;
+    });
+    const [asked, random] = await Promise.all([
+      Promise.all(asking(preset, text, site.gathered).map(async ({ question, ids }) => ({ question, ids, sides: await inBothOrders(question, about(ids)) }))),
+      scrollers.length >= MIN_ASKED ? askQuestion(send, 'why', about(shuffled(scrollers, rng(13)).slice(0, ASK_WEIGHT))) : null,
+    ]);
+    const row = (report.site[name] = { preset, groups: Object.fromEntries(Object.entries(site.gathered).map(([group, ids]) => [group, ids.length])), checks: site.checks, lists: {}, tokens_per_person: {} });
+    for (const { question, ids, sides } of asked) {
+      row.tokens_per_person[question] = Math.round(sides.listed.tokens / ids.length);
+      for (const list of listsOf(question, preset, ids, site.reactionOf)) row.lists[list] = bothLists(sides, list, preset);
+      for (const side of Object.values(sides)) {
+        for (const id of ids) {
+          const probabilities = side.answers[questionId({ id })]?.probabilities;
+          if (probabilities) drains[people[id].temper === 'lurker' ? 'lurker' : 'rest'].push(probabilities[CANT_TELL] ?? 0);
+        }
+      }
+    }
+    report.not_for_them[name] = { in_pick_order: row.lists.scrolled?.listed?.shares?.not_for_them ?? null, random: (random && readList(random.part, 'scrolled', preset)?.shares?.not_for_them) ?? null };
+    console.log(`${name}: ${Object.entries(row.groups).map(([group, count]) => `${group} ${count}`).join(', ')}; checks ${Object.entries(row.checks).map(([id, p]) => `${id} ${p}`).join(', ')}; tokens per person ${JSON.stringify(row.tokens_per_person)}`);
+    for (const [list, both] of Object.entries(row.lists)) console.log(`  ${list}: ${sideLine(both.listed)} | reversed: ${sideLine(both.reversed)}${both.lead_changes ? ' | the lead changes' : ''}`);
+    console.log(`  not_for_them among scrollers, in pick order ${report.not_for_them[name].in_pick_order}, at random ${report.not_for_them[name].random}`);
+  }
+  report.drain_by_temper = Object.fromEntries(Object.entries(drains).map(([temper, values]) => [temper, { answers: values.length, drain: round(mean(values)) }]));
+  console.log('drain by temper:', report.drain_by_temper);
+
+  // B. The same 100 people of a pool, all glad in the same way, about every text of a preset.
+  for (const [name, { preset, pool, text }] of Object.entries({ ...DULL, ...TEXTS, ...PLAIN })) {
+    const people = crowdOf(pool).filter((who) => who.id % 100 === 3);
+    const about = { presetId: preset, text, people, reactionOf: () => FIXED_DID[preset], pool, versionId: 'probe' };
+    const row = (report.fixed[name] = { preset });
+    await Promise.all((preset === 'post' ? ['hook', 'comment'] : ['hook']).map(async (question) => {
+      const sides = await inBothOrders(question, about);
+      row[question] = { ...bothLists(sides, question, preset), halves_apart: halvesApart(sides.listed.answers, people.map((who) => who.id)) };
+      console.log(`${name}, ${question}: ${sideLine(row[question].listed)} | reversed: ${sideLine(row[question].reversed)}`);
+    }));
+  }
+
+  // C. The text checks alone, one request per text, beside what the opening requests of A said.
+  const cases = checkCases();
+  const key = (one) => `${one.preset} ${one.text}`;
+  const alone = new Map();
+  await eachLimit([...new Map(cases.map((one) => [key(one), one])).values()], 8, async (one) => {
+    alone.set(key(one), openingAnswers((await send(checksOnly(one.preset, one.text))).answers).checks);
+  }, (one, error) => {
+    if (error.fatal) throw error;
+    console.warn('  checks failed:', one.name, error.message);
+  });
+  report.checks = cases.map((one) => ({ check: one.check, text: one.name, preset: one.preset, yes: one.yes, alone: alone.get(key(one))?.[one.check] ?? null, in_opening: sites[one.name]?.checks[one.check] ?? null }));
+  for (const one of report.checks) console.log(`${one.check.padEnd(12)} ${(one.yes ? 'yes' : 'no').padEnd(4)} alone ${one.alone}, in the opening ${one.in_opening}  ${one.text}`);
+
+  report.gates = townGates(report);
+  console.log(JSON.stringify(report.gates, null, 1));
+  await save('town', report);
+}
+
+/** The gates of the town step, from its report. A question or check that fails one is dropped or rewritten before it ships. */
+function townGates({ site, fixed, checks }) {
+  const dull = Object.keys(DULL);
+  const lists = (name, list) => site[name].lists[list];
+  const everyOrder = (test) => ORDERS.every(test);
+  const gates = {};
+
+  // 1. Those who scrolled past a dull text are not all put down to the wrong audience: at least 5 of 6, in each order.
+  const notAudience = ORDERS.map((order) => dull.filter((name) => {
+    const top = topOf(lists(name, 'scrolled')?.[order]);
+    return top && top !== 'not_for_them';
+  }).length);
+  gates.why_scrolled = { dull_texts_led_by_another_reason: notAudience, pass: notAudience.every((count) => count >= 5) };
+
+  // 2. Spam and the scam listing annoy by distrust, rage by something else, in each order.
+  const sorryTop = (name, order) => topOf(lists(name, 'sorry')?.[order]);
+  gates.why_sorry = {
+    tops: Object.fromEntries(['spam', 'listing_scam', 'rage'].map((name) => [name, ORDERS.map((order) => sorryTop(name, order))])),
+    pass: everyOrder((order) => sorryTop('spam', order) === 'distrust' && sorryTop('listing_scam', order) === 'distrust' && ![null, 'distrust'].includes(sorryTop('rage', order))),
+  };
+
+  // 3. The split line: dull texts put more of the passing down to the text than strong ones do, by more than the order moves it.
+  const textShares = (names) => names.map((name) => ORDERS.map((order) => lists(name, 'scrolled')?.[order]?.text_share)).filter((pair) => pair.every((share) => share != null));
+  const dullShare = mean(textShares(dull).map(mean));
+  const strongShare = mean(textShares(Object.keys(TEXTS)).map(mean));
+  const orderShift = mean(textShares(Object.keys(site)).map(([a, b]) => Math.abs(a - b)));
+  gates.split_line = { dull: round(dullShare), strong: round(strongShare), order_shift: round(orderShift), pass: dullShare - strongShare > orderShift };
+
+  // 4. hook and comment tell texts apart by more than twice the noise of the order and of halving the people.
+  gates.hook_comment = {};
+  for (const [question, presets] of [['hook', Object.keys(PRESETS)], ['comment', ['post']]]) {
+    for (const presetId of presets) {
+      const rows = Object.values(fixed).filter((row) => row.preset === presetId && row[question] && ORDERS.every((order) => row[question][order]?.real >= 50)).map((row) => row[question]);
+      const between = [];
+      for (let i = 0; i < rows.length; i++) for (let j = i + 1; j < rows.length; j++) for (const order of ORDERS) between.push(distance(rows[i][order].shares, rows[j][order].shares));
+      const noise = Math.max(mean(rows.map((row) => distance(row.listed.shares, row.reversed.shares))), mean(rows.map((row) => row.halves_apart)));
+      gates.hook_comment[`${question}.${presetId}`] = { texts: rows.length, between: round(mean(between)), noise: round(noise), pass: rows.length >= 2 && mean(between) > 2 * noise };
+    }
+  }
+  const posts = Object.values(fixed).filter((row) => row.preset === 'post' && row.hook);
+  const ledByOpening = ORDERS.map((order) => posts.filter((row) => topOf(row.hook[order]) === 'opening').length);
+  gates.hook_opening = { post_texts: posts.length, led_by_opening: ledByOpening, drop: ledByOpening.every((count) => count > posts.length / 2) };
+
+  // 5. A question whose drain takes more than half of those asked on more than half of its texts says too little.
+  const drains = {};
+  for (const { lists: byList } of Object.values(site)) {
+    const byQuestion = {};
+    for (const [list, both] of Object.entries(byList)) {
+      for (const order of ORDERS) {
+        const side = both[order];
+        if (!side) continue;
+        const sum = (byQuestion[questionOfList(list)] ??= { drained: 0, asked: 0 });
+        sum.drained += side.drain * side.asked;
+        sum.asked += side.asked;
+      }
+    }
+    for (const [question, { drained, asked }] of Object.entries(byQuestion)) (drains[question] ??= []).push(drained / asked);
+  }
+  gates.drain = Object.fromEntries(Object.entries(drains).map(([question, values]) => [question, { texts: values.length, drained: values.filter((value) => value > 0.5).length, drop: values.filter((value) => value > 0.5).length > values.length / 2 }]));
+
+  // 6. Every text check answers yes and no where it should, and mostly outside 0.3 to 0.7, per wording.
+  const byWording = {};
+  for (const one of checks) {
+    const wording = typeof TEXT_CHECKS[one.check].ask === 'string' ? one.check : `${one.check}.${one.preset}`;
+    for (const p of [one.alone, one.in_opening]) if (p != null) (byWording[wording] ??= []).push({ yes: one.yes, p });
+  }
+  gates.checks = Object.fromEntries(Object.entries(byWording).map(([wording, answers]) => {
+    const right = answers.filter(({ yes, p }) => (yes ? p >= 0.5 : p < 0.5)).length;
+    const clear = answers.filter(({ p }) => p < 0.3 || p > 0.7).length;
+    return [wording, { answers: answers.length, right, clear, pass: right === answers.length && clear >= answers.length * 0.75 }];
+  }));
+  return gates;
+}
+
+const steps = { attributes, batch, presets, crowd: wholeCrowd, waves, calibrate, throughput, 'first-waves': firstWaves, memory, town };
 const wanted = process.argv.slice(2);
 if (!wanted.length || wanted.some((name) => !steps[name])) {
   console.log(`usage: node --env-file=.env.local scripts/probe.js <${Object.keys(steps).join('|')}> ...`);

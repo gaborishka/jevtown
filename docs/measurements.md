@@ -228,3 +228,36 @@ Six posts, the first 150 people of each one's first wave, asked four ways: as th
 Jev reads the clause. A follower scrolls past two to four times less often (0.04 to 0.01 on the seedlings, 0.58 to 0.26 on the greeting) and likes more, and "follows the author to see more" halves or vanishes for somebody who already does. The short clause shifts a reaction without deciding it: spam stays spam, and followers are as sorry about the rage post as anybody (0.16), only more of them like it too. "And liked their earlier posts" decides it: the spam passes the 0.1 rule and the rage post scores like the best text here. "Was annoyed by an earlier post" is as strong the other way and turns every good post sour.
 
 A memory of an author could rest on that: a follow puts the persona at the head of the first wave of the next post with `; follows this author` in its line, a block keeps the post away from it for good. A follow is rare, 0 to 3% of a first wave, so the head start would be a few dozen people after a good post. It was built and taken out the same day: an author on the site is a cookie, not an account, and people post one text many times to try it, so follows and blocks left by earlier tries would bend every new one. Every post is on its own. Memory of a persona's own earlier reactions was weighed and dropped: they are Jev's own draws, so sending them back tells it nothing new, six of them make a persona two to four times longer (249 tokens to 560 in English, 930 in Ukrainian), and the same text would score differently depending on what the town read the day before.
+
+## Asking the town and reading the text
+
+`npm run probe -- town`, run on 2026-09-22: the twelve texts of the first sections and two plain ones, 249 requests, $0.20. Every closing question went out twice, with its answers in the listed order and reversed, since Jev leans towards the first answer it is offered. Each of the four questions and each of the text checks had a gate to pass before it ships; three did not, and were taken out before release.
+
+Why they scrolled past or got annoyed passed every gate:
+
+| Text | Top reason for scrolling past | Top reason for getting annoyed |
+|---|---|---|
+| Spam | distrust 0.98 | distrust 1.00 |
+| "Good morning everybody" | nothing new 0.78 | too few annoyed to ask |
+| Vague post | unclear 0.47, weak opening 0.34, about equal | nobody annoyed |
+| Rage post | tone 0.55 | tone 0.72 |
+| Scam listing | distrust 0.80 | distrust 0.96 |
+| Tomato seedlings | not for them 0.69 | too few annoyed to ask |
+| iPhone listing | price 0.55 | too few annoyed to ask |
+| Running socks | price 0.50, distrust 0.34, about equal | nobody annoyed |
+
+On all six weak texts, in both orders, a reason other than "not for them" led. The weak texts put 94% of the passing down to the text itself, the strong ones 65%; the order of the answers moved that share by 6 points.
+
+What stopped the people who liked it, and what they would comment, tell texts apart. With the same 100 people glad about every text, two texts differed by 0.61 (hooks of posts), 0.65 (hooks of listings) and 0.34 (comments), against a noise of 0.12, 0.08 and 0.04 from the order and from halving the people. "The opening" led only one or three of seven posts, so it stays. Products and headlines had too few texts to run the gate, so their hooks ship unmeasured.
+
+"Nothing hints at an answer", the hidden drain, took 3% of lurkers' answers and 7% of everybody else's. It took more than half of those asked only once: the 12 people glad about the vague post, asked what stopped them (0.52).
+
+Taken out:
+
+- **How far they read.** Four times the text did not make fewer read to the end: 79% and 86% for the seedlings, short and long, 82% and 77% for the coding post, 85% and 77% for the coffee post, 67% and 69% for the listing. None of the differences beat two standard errors in both orders.
+- **Reads as written by AI.** Of twelve answers, eight were right and three clear of 0.3 to 0.7; a text rewritten in a chatbot's style scored 0.47 to 0.77 and the originals 0.15 to 0.56.
+- **The main point in the first sentence, for a post and a product.** The seedlings post and the socks both got 0.47 to 0.51. For a listing all three answers were right and clear (0.96 for the iPhone listing, 0.11 when padded), so a listing keeps it.
+
+Is it clear what to do next (right and clear 14 of 14) and does it have a concrete number, name or example (18 of 18) stay for every preset but the headline, which keeps only the second.
+
+The closing questions cost 190 to 360 tokens a person, so a post whose three questions each go to 100 people adds about 76,000 tokens, $0.003.
