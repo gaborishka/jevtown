@@ -2,7 +2,7 @@
 //   node --env-file=.env.local scripts/probe.js attributes batch presets crowd waves
 // `town` measures what the town is asked when a check closes and the text checks; its gates decide which stay.
 // It is paid, about $0.22, and stops at PROBE_BUDGET_USD like every step.
-// `audience` measures how Jev reads an audience in words against its own reading of each person (paid, about $0.04).
+// `audience` measures how Jev reads an audience in words against its own reading of each person (paid, about a cent).
 // Raw numbers go to data/probe/*.json (not committed); the conclusions are in docs/measurements.md.
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { crowd, withAttributes, personaLine } from '../public/shared/personas.js';
