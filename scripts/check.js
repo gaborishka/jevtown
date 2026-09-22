@@ -2,12 +2,14 @@
 //   node --env-file=.env.local scripts/check.js --preset listing "iPhone 13, 128 GB, ..."
 // Every wave, the follow-up, what the town was asked at the end and Jev's reading of the text.
 //   options: --preset post|listing|product|headline   --pool uk|en   --prices 9,15,24,39   --currency $   --waves 2
+//            --audience "people who work in IT and are into startups"   only the people who fit it read the text
 import { crowd, GRID } from '../public/shared/personas.js';
 import { PRESETS, LISTS, answersFor, questionOfList } from '../public/shared/presets.js';
 import { checksFor } from '../public/shared/requests.js';
 import { pickProvider, ask } from '../public/shared/jev.js';
 import { runCheck, NOT_SHOWN } from '../public/shared/check.js';
-import { counters, segments, topSegments, mostAnnoyed, rankedAnswers, demandCurve, listView, whySplit, readCheck, DRAIN_NOTE_FROM } from '../public/shared/summary.js';
+import { MIN_AUDIENCE } from '../public/shared/feed.js';
+import { counters, segments, inAudience, topSegments, mostAnnoyed, rankedAnswers, demandCurve, listView, whySplit, readCheck, DRAIN_NOTE_FROM } from '../public/shared/summary.js';
 import { hash32 } from '../public/shared/rng.js';
 import { INTEREST, FIELDS, AGE_GROUP, TEMPER, BUDGET, SHOP } from '../public/shared/vocab.js';
 import { DICTIONARIES } from '../public/i18n.js';
@@ -22,17 +24,20 @@ const pool = option('pool', 'uk');
 const prices = option('prices', '5,9,19,49').split(',').map(Number);
 const currency = option('currency', '$');
 const maxWaves = Number(option('waves', 4));
+const description = option('audience', '').replace(/\s+/g, ' ').trim();
 const text = args.join(' ').trim();
 const provider = pickProvider(process.env);
 if (!text || !PRESETS[presetId] || !provider) {
-  console.log('usage: node --env-file=.env.local scripts/check.js [--preset post|listing|product|headline] [--pool uk|en] [--prices 9,15,24] "text"');
+  console.log('usage: node --env-file=.env.local scripts/check.js [--preset post|listing|product|headline] [--pool uk|en] [--prices 9,15,24] [--audience "whom it is for"] "text"');
   process.exit(1);
 }
 
 // The grid, two personas per character cell: the upper half block carries one row, its background the next.
-const COLORS = { dark: 234, scrolled: 240, hollow: 60, stopped: 111, glad: 78, spreads: 220, sorry: 203 };
-const colorOf = (preset, keys, byte) => {
-  if (byte === NOT_SHOWN) return COLORS.dark;
+// With an audience, its members the text did not reach are a shade lighter than the rest of the town.
+const COLORS = { dark: 234, member: 237, scrolled: 240, hollow: 60, stopped: 111, glad: 78, spreads: 220, sorry: 203 };
+let members = null;
+const colorOf = (preset, keys, byte, id) => {
+  if (byte === NOT_SHOWN) return members?.[id] === 1 ? COLORS.member : COLORS.dark;
   const reaction = preset.reactions[keys[byte - 1]];
   if (reaction.hollow) return COLORS.hollow;
   if (!reaction.stopped) return COLORS.scrolled;
@@ -42,7 +47,7 @@ function drawGrid(preset, keys, reactions) {
   const lines = [];
   for (let y = 0; y < GRID; y += 2) {
     let line = '';
-    for (let x = 0; x < GRID; x++) line += `\x1b[38;5;${colorOf(preset, keys, reactions[y * GRID + x])};48;5;${colorOf(preset, keys, reactions[(y + 1) * GRID + x])}m▀`;
+    for (let x = 0; x < GRID; x++) line += `\x1b[38;5;${colorOf(preset, keys, reactions[y * GRID + x], y * GRID + x)};48;5;${colorOf(preset, keys, reactions[(y + 1) * GRID + x], (y + 1) * GRID + x)}m▀`;
     lines.push(`${line}\x1b[0m`);
   }
   return lines.join('\n');
@@ -52,35 +57,61 @@ const swatch = (color, label) => `\x1b[38;5;${color}m■\x1b[0m ${label}`;
 const preset = PRESETS[presetId];
 console.log(`${preset.noun} → ${pool} crowd, Jev via ${provider.label}\n`);
 
-const result = await runCheck({
-  send: (request) => ask(provider, request),
-  presetId, pool, text, prices, currency, maxWaves,
-  versionId: hash32(text).toString(36),
-  onWave: (wave) => console.log(`wave ${wave.index + 1}: ${wave.size} people in ${wave.seconds.toFixed(1)} s, mood ${wave.mood.toFixed(2)} → ${wave.travels ? 'travels further' : 'stops here'}`),
-});
+const en = DICTIONARIES.en;
+const LABELS = { interest: (id) => `into ${INTEREST[id].en}`, field: (id) => FIELDS[id].group, age: (id) => `aged ${AGE_GROUP[id].en}`, temper: (id) => `${TEMPER[id].en}s`, budget: (id) => BUDGET[id].en, shopping: (id) => `looking for ${SHOP[id].en}`, city: (id) => `from ${id}` };
+const VALUES = { interest: (id) => INTEREST[id].en, field: (id) => FIELDS[id].group, age: (id) => AGE_GROUP[id].en, budget: (id) => BUDGET[id].en, shopping: (id) => SHOP[id].en };
+const reasonsOf = (ids) => ids.map((id) => en.blocked.reasons[id] ?? id).join(', ');
+const cost = (spent) => `${spent.requests} requests, ${spent.tokens.toLocaleString('en')} tokens, $${spent.usd.toFixed(4)}`;
+
+let result;
+try {
+  result = await runCheck({
+    send: (request) => ask(provider, request),
+    presetId, pool, text, prices, currency, maxWaves,
+    versionId: hash32(text).toString(36),
+    audience: description || null,
+    onWave: (wave) => console.log(`wave ${wave.index + 1}: ${wave.size} people in ${wave.seconds.toFixed(1)} s, mood ${wave.mood.toFixed(2)} → ${wave.travels ? 'travels further' : 'stops here'}`),
+  });
+} catch (error) {
+  // The site refuses these the same way; the hint is the page's own.
+  if (error.code === 'no_fit') console.log(`audience "${description}": ${en.errors.no_fit}`);
+  else if (error.code === 'few_fit') console.log(`audience "${description}": ${en.errors.few_fit(error.fits, MIN_AUDIENCE)}`);
+  else throw error;
+  console.log(`\n${cost(error.spent)}`);
+  process.exit(1);
+}
 
 const { keys, reactions, scores } = result;
+const town = crowd(pool);
+if (result.audience) {
+  const { parts, scores: fit, size, unlisted, blocked } = result.audience;
+  members = result.audience.members;
+  console.log(`\naudience "${result.audience.text}": ${size.toLocaleString('en')} of ${town.length.toLocaleString('en')} fit every part`);
+  const open = Object.keys(VALUES).filter((part) => !parts[part]).map((part) => en.audience.partWord[part]);
+  console.log(`  ${[...Object.entries(parts).map(([part, values]) => `${en.audience.part[part].toLowerCase()}: ${values.map((value) => `${VALUES[part](value)} ${fit[`${part}:${value}`].toFixed(2)}`).join(', ')}`), open.length && `left open: ${open.join(', ')}`].filter(Boolean).join(' · ')}`);
+  if (blocked.length) console.log(`  the site would refuse the description: ${reasonsOf(blocked)}`);
+  else if (unlisted.length) console.log(`  the site would keep the post out of the feed for the description: ${reasonsOf(unlisted)}`);
+}
 console.log(`\n${drawGrid(preset, keys, reactions)}`);
-console.log([swatch(COLORS.dark, 'not shown'), swatch(COLORS.scrolled, 'scrolled past'), swatch(COLORS.stopped, 'stopped'), swatch(COLORS.glad, 'glad'), swatch(COLORS.spreads, 'spread it'), swatch(COLORS.sorry, 'sorry'), swatch(COLORS.hollow, "can't tell")].join('  '));
+console.log([swatch(COLORS.dark, members ? 'outside the audience' : 'not shown'), members && swatch(COLORS.member, 'in the audience, not shown'), swatch(COLORS.scrolled, 'scrolled past'), swatch(COLORS.stopped, 'stopped'), swatch(COLORS.glad, 'glad'), swatch(COLORS.spreads, 'spread it'), swatch(COLORS.sorry, 'sorry'), swatch(COLORS.hollow, "can't tell")].filter(Boolean).join('  '));
 
 const totals = counters(presetId, keys, reactions);
-console.log(`\nreach ${totals.reach} of 10,000 in ${result.waves.length} wave${result.waves.length > 1 ? 's' : ''}`);
+const everybody = result.audience?.size ?? reactions.length;
+console.log(`\nreach ${totals.reach} of ${result.audience ? `the ${everybody.toLocaleString('en')} in the audience` : everybody.toLocaleString('en')} in ${result.waves.length} wave${result.waves.length > 1 ? 's' : ''}`);
 console.log(Object.entries(totals.byReaction).map(([key, count]) => `${key.replace('_', ' ')} ${count}`).join(' · '));
 
-const LABELS = { interest: (id) => `into ${INTEREST[id].en}`, field: (id) => FIELDS[id].group, age: (id) => `aged ${AGE_GROUP[id].en}`, temper: (id) => `${TEMPER[id].en}s`, budget: (id) => BUDGET[id].en, shopping: (id) => `looking for ${SHOP[id].en}`, city: (id) => `from ${id}` };
 const name = (segment) => LABELS[segment.attribute](segment.value);
 const percent = (share) => `${Math.round(share * 100)}%`;
 
 console.log('\nshown to: ' + Object.entries(scores).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([id, score]) => `${LABELS[id.split(':')[0]](id.split(':')[1])} ${score.toFixed(2)}`).join(', '));
-const en = DICTIONARIES.en;
 console.log("text checks (Jev's reading of the text, not the town's reactions):");
 for (const [id] of checksFor(presetId)) {
   if (result.checks[id] == null) continue;
   const label = typeof en.checks.labels[id] === 'string' ? en.checks.labels[id] : en.checks.labels[id][presetId];
   console.log(`  ${readCheck(result.checks[id]).padEnd(7)} ${result.checks[id].toFixed(2)}  ${label}`);
 }
-const all = segments(presetId, keys, reactions, crowd(pool));
-const line = (what) => topSegments(all, what).map((s) => `${name(s)} ${percent(s[what] / s.size)}`).join(', ') + ` (everybody: ${percent(totals[what] / reactions.length)})`;
+const all = segments(presetId, keys, reactions, inAudience(town, members));
+const line = (what) => topSegments(all, what).map((s) => `${name(s)} ${percent(s[what] / s.size)}`).join(', ') + ` (${members ? 'the audience' : 'everybody'}: ${percent(totals[what] / everybody)})`;
 console.log(`who stopped: ${line('stopped')}`);
 console.log(`who was glad: ${line('glad')}`);
 if (totals.sorry >= 10) console.log(`who got annoyed: ${line('sorry')}`);

@@ -2,17 +2,18 @@
 //   node --env-file=.env.local scripts/probe.js attributes batch presets crowd waves
 // `town` measures what the town is asked when a check closes and the text checks; its gates decide which stay.
 // It is paid, about $0.22, and stops at PROBE_BUDGET_USD like every step.
+// `audience` measures how Jev reads an audience in words against its own reading of each person (paid, about $0.04).
 // Raw numbers go to data/probe/*.json (not committed); the conclusions are in docs/measurements.md.
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
-import { crowd, withAttributes } from '../public/shared/personas.js';
+import { crowd, withAttributes, personaLine } from '../public/shared/personas.js';
 import { PRESETS, priceLadder, questionOfList, CANT_TELL } from '../public/shared/presets.js';
 import { reactionRequest, followUpRequest, exposureRequest, exposureScores, openingRequest, openingAnswers, questionId, TEXT_CHECKS } from '../public/shared/requests.js';
 import { pickProvider, ask, eachLimit } from '../public/shared/jev.js';
-import { firstWave, nextWave, travels, mood, exposure, gatherAsked, asking, WAVES, ASK_WEIGHT, MIN_ASKED } from '../public/shared/feed.js';
-import { askQuestion, listsOf } from '../public/shared/check.js';
+import { firstWave, nextWave, travels, mood, exposure, gatherAsked, asking, audienceOf, WAVES, ASK_WEIGHT, MIN_ASKED, MIN_AUDIENCE } from '../public/shared/feed.js';
+import { askQuestion, listsOf, rateAudience } from '../public/shared/check.js';
 import { listView, whySplit } from '../public/shared/summary.js';
 import { drawReaction } from '../public/shared/draw.js';
-import { rng } from '../public/shared/rng.js';
+import { rng, hash32 } from '../public/shared/rng.js';
 
 const OUT = new URL('../data/probe/', import.meta.url);
 const BUDGET_USD = Number(process.env.PROBE_BUDGET_USD ?? 1.5);
@@ -48,6 +49,7 @@ const chunk = (items, size) => Array.from({ length: Math.ceil(items.length / siz
 const mean = (values) => values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
 const percentile = (values, p) => [...values].sort((a, b) => a - b)[Math.min(values.length - 1, Math.floor(values.length * p))];
 const round = (value, digits = 3) => Number(value.toFixed(digits));
+const percent = (share) => `${Math.round(share * 100)}%`;
 const stoppedShare = (presetId, probabilities) => Object.entries(probabilities).reduce((sum, [id, value]) => sum + (PRESETS[presetId].reactions[id]?.stopped ? value : 0), 0);
 /** Total variation distance between two answers to the same question. */
 const distance = (a, b) => Object.keys({ ...a, ...b }).reduce((sum, key) => sum + Math.abs((a[key] ?? 0) - (b[key] ?? 0)), 0) / 2;
@@ -616,7 +618,72 @@ function townGates({ site, fixed, checks }) {
   return gates;
 }
 
-const steps = { attributes, batch, presets, crowd: wholeCrowd, waves, calibrate, throughput, 'first-waves': firstWaves, memory, town };
+/** Descriptions an author might write; the last two name nothing the town knows and should give no_fit. */
+const AUDIENCES = [
+  { pool: 'en', text: 'people who work in IT and are into startups' },
+  { pool: 'en', text: 'tech founders of early-stage B2B SaaS' },
+  { pool: 'en', text: 'people over 60' }, // does Jev name their work too?
+  { pool: 'en', text: 'parents of toddlers' },
+  { pool: 'uk', text: 'пенсіонери, які мають город' },
+  { pool: 'uk', text: 'студенти-айтівці' },
+  { pool: 'en', text: 'left-handed people', none: true },
+  { pool: 'en', text: 'everybody', none: true },
+];
+const SAMPLE = { members: 100, near: 100, far: 200 };
+
+/** Jev asked, with the description as the state, whether each person is one of the people it is about → Map(id → yes). */
+async function fitsOf(description, personas) {
+  const yes = new Map();
+  await eachLimit(chunk(personas, PER_REQUEST), 8, async (batch) => {
+    const questions = Object.fromEntries(batch.map((who) => [questionId(who), { type: 'noul', instructions: `${personaLine(who, { market: true })}. Is this person one of the people the description is about?`, criteria: { true: 'Yes', false: 'No' } }]));
+    const result = await send({ state: { seen_in: 'an author describing, in their own words, the readers a text is written for', audience: description }, questions });
+    for (const who of batch) yes.set(who.id, result.answers[questionId(who)]?.noul ?? 0);
+  }, (batch, error) => {
+    if (error.fatal) throw error;
+    console.warn('  batch failed:', error.message);
+  });
+  return yes;
+}
+
+/**
+ * Each description rated twice: do the parts and the members hold? Then Jev's own reading of 100 members,
+ * 100 near misses (they fit every counting part but one) and 200 others, for precision and an estimate of recall.
+ */
+async function audience() {
+  const rows = [];
+  for (const { pool, text, none } of AUDIENCES) {
+    const town = crowdOf(pool);
+    const [first, second] = [await rateAudience(send, text), await rateAudience(send, text)];
+    const sizes = [first, second].map((rated) => (rated.parts ? audienceOf(town, rated.parts).length : 0));
+    const row = { pool, text, expected: none ? 'no_fit' : 'fits', named: first.named, parts: first.parts, sizes, holds: JSON.stringify(first.parts) === JSON.stringify(second.parts), unlisted: first.unlisted };
+    console.log(`\n"${text}" (${pool}): named ${first.named.join(', ') || 'nothing'}, parts ${JSON.stringify(first.parts)}, ${sizes.join(' then ')} fit${row.holds ? '' : ' (the second reading differs)'}${none ? ', expected no_fit' : ''}`);
+    if (first.parts && sizes[0] >= MIN_AUDIENCE) {
+      const members = audienceOf(town, first.parts);
+      const inside = new Set(members.map((who) => who.id));
+      const parts = Object.entries(first.parts);
+      // Near misses fit every counting part but one; with a single part, that is everybody else.
+      const near = town.filter((who) => !inside.has(who.id) && parts.filter(([part, values]) => audienceOf([who], { [part]: values }).length).length === parts.length - 1);
+      const nearIds = new Set(near.map((who) => who.id));
+      const far = town.filter((who) => !inside.has(who.id) && !nearIds.has(who.id));
+      const random = rng(hash32('audience', text));
+      const sample = (people, count) => shuffled(people, random).slice(0, count);
+      const asked = { members: sample(members, SAMPLE.members), near: sample(near, SAMPLE.near), far: sample(far, SAMPLE.far) };
+      const yes = await fitsOf(text, Object.values(asked).flat());
+      const rate = (people) => (people.length ? mean(people.map((who) => ((yes.get(who.id) ?? 0) >= 0.5 ? 1 : 0))) : 0);
+      const rates = Object.fromEntries(Object.entries(asked).map(([name, people]) => [name, round(rate(people))]));
+      const truePositives = rates.members * members.length;
+      const falseNegatives = rates.near * near.length + rates.far * far.length;
+      Object.assign(row, { rates, counts: { members: members.length, near: near.length, far: far.length }, precision: rates.members, recall: round(truePositives / Math.max(1, truePositives + falseNegatives)) });
+      console.log(`  Jev says yes to ${percent(rates.members)} of members, ${percent(rates.near)} of near misses (${near.length} in town), ${percent(rates.far)} of the rest (${far.length}); recall about ${percent(row.recall)}`);
+    }
+    rows.push(row);
+  }
+  const noFit = rows.filter((row) => row.expected === 'no_fit');
+  console.log(`\nno_fit where expected: ${noFit.filter((row) => !row.parts).length} of ${noFit.length}; parts held on a second reading: ${rows.filter((row) => row.holds).length} of ${rows.length}`);
+  await save('audience', rows);
+}
+
+const steps = { attributes, batch, presets, crowd: wholeCrowd, waves, calibrate, throughput, 'first-waves': firstWaves, memory, town, audience };
 const wanted = process.argv.slice(2);
 if (!wanted.length || wanted.some((name) => !steps[name])) {
   console.log(`usage: node --env-file=.env.local scripts/probe.js <${Object.keys(steps).join('|')}> ...`);
